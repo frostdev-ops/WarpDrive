@@ -22,6 +22,7 @@ import org.w3c.dom.Element;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -318,18 +319,12 @@ public class CelestialObjectManager extends XmlFileManager {
 	}
 
 	public static CelestialObject getByDimensionId(final boolean isRemote, final int dimensionId) {
-		for (final CelestialObject celestialObject : (isRemote ? CLIENT : SERVER).celestialObjects) {
-			if ( celestialObject != null
-			  && !celestialObject.isVirtual()
-			  && celestialObject.dimensionId == dimensionId ) {
-				return celestialObject;
-			}
-		}
-		return null;
+		final List<CelestialObject> celestialObjects = (isRemote ? CLIENT : SERVER).registry.byDimensionId.get(dimensionId);
+		return celestialObjects == null || celestialObjects.isEmpty() ? null : celestialObjects.get(0);
 	}
 
-	public static CelestialObject[] getRegistry(final boolean isRemote) {
-		return (isRemote ? CLIENT : SERVER).celestialObjects;
+	public static Collection<CelestialObject> getRegistry(final boolean isRemote) {
+		return (isRemote ? CLIENT : SERVER).registry.byId.values();
 	}
 	
 	public static NBTBase writeClientSync(final EntityPlayerMP entityPlayerMP, final CelestialObject celestialObject) {
