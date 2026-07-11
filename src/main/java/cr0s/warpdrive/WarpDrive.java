@@ -1,6 +1,7 @@
 package cr0s.warpdrive;
 
 import cr0s.warpdrive.api.IBlockBase;
+import cr0s.warpdrive.compat.CompatGalacticraftSpaceStations;
 import cr0s.warpdrive.block.BlockChunkLoader;
 import cr0s.warpdrive.block.BlockLaser;
 import cr0s.warpdrive.block.BlockLaserMedium;
@@ -188,6 +189,7 @@ import net.minecraftforge.fml.common.SidedProxy;
 import net.minecraftforge.fml.common.event.FMLInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPostInitializationEvent;
 import net.minecraftforge.fml.common.event.FMLPreInitializationEvent;
+import net.minecraftforge.fml.common.event.FMLServerStartedEvent;
 import net.minecraftforge.fml.common.event.FMLServerStartingEvent;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 import net.minecraftforge.fml.common.registry.EntityEntry;
@@ -698,6 +700,14 @@ public class WarpDrive {
 		event.registerServerCommand(new CommandReload());
 		event.registerServerCommand(new CommandRender());
 		event.registerServerCommand(new CommandSpace());
+	}
+
+	@EventHandler
+	public void onFMLServerStarted(final FMLServerStartedEvent event) {
+		// fires after every mod's server starting phase, i.e. after Galacticraft registered its space stations
+		if (WarpDriveConfig.isGalacticraftLoaded) {
+			CompatGalacticraftSpaceStations.onServerStarted();
+		}
 	}
 	
 	/* DataFixer documentation/feature on limbo => use midas configuration instead
