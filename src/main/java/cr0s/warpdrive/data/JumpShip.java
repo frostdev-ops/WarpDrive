@@ -513,10 +513,15 @@ public class JumpShip {
 		BlockPos blockPos = new BlockPos(0, -1, 0);
 		try {
 			final MutableBlockPos mutableBlockPos = new MutableBlockPos();
+			// pre-size from the last ship scan when available, falling back to a ratio of the bounding box:
+			// growing from an empty list would reallocate over a dozen times on a medium sized ship
+			final int estimatedVolume = (maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
+			final int estimatedBlocks = shipCore != null && shipCore.shipVolume > 0 ? shipCore.shipVolume
+			                                                                        : Math.max(16, estimatedVolume / 5);
 			@SuppressWarnings("unchecked")
 			final ArrayList<JumpBlock>[] placeTimeJumpBlocks = new ArrayList[5];
 			for (int placeTime = 0; placeTime < placeTimeJumpBlocks.length; placeTime++) {
-				placeTimeJumpBlocks[placeTime] = new ArrayList<>();
+				placeTimeJumpBlocks[placeTime] = new ArrayList<>(estimatedBlocks);
 			}
 			
 			int actualVolume = 0;
