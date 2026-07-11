@@ -42,7 +42,8 @@ public class CompatGalacticraft implements IBlockTransformer {
 	private static Class<?> classBlockParaChest;
 	private static Class<?> classBlockTier1TreasureChest;
 	private static Class<?> classBlockTorchBase;
-	
+	private static Class<?> classBlockSpout;
+
 	public static void register() {
 		try {
 			classBlockAdvanced = Class.forName("micdoodle8.mods.galacticraft.core.blocks.BlockAdvanced");
@@ -50,13 +51,20 @@ public class CompatGalacticraft implements IBlockTransformer {
 			classBlockParaChest = Class.forName("micdoodle8.mods.galacticraft.core.blocks.BlockParaChest");
 			classBlockTier1TreasureChest = Class.forName("micdoodle8.mods.galacticraft.core.blocks.BlockTier1TreasureChest");
 			classBlockTorchBase = Class.forName("micdoodle8.mods.galacticraft.core.blocks.BlockTorchBase");
-			
+
 			INSTANCE = new CompatGalacticraft();
 			WarpDriveConfig.registerBlockTransformer("Galacticraft", INSTANCE);
-			
+
 			MinecraftForge.EVENT_BUS.register(INSTANCE);
 		} catch(final ClassNotFoundException exception) {
 			exception.printStackTrace();
+		}
+
+		// Galacticraft Planets is optional: its absence shall not disable the core compatibility
+		try {
+			classBlockSpout = Class.forName("micdoodle8.mods.galacticraft.planets.venus.blocks.BlockSpout");
+		} catch(final ClassNotFoundException exception) {
+			WarpDrive.logger.info("Galacticraft Planets not detected, skipping related block transformers");
 		}
 	}
 	
@@ -115,7 +123,8 @@ public class CompatGalacticraft implements IBlockTransformer {
 		    || classBlockConcealedDetector.isInstance(block)
 		    || classBlockParaChest.isInstance(block)
 		    || classBlockTier1TreasureChest.isInstance(block)
-		    || classBlockTorchBase.isInstance(block);
+		    || classBlockTorchBase.isInstance(block)
+		    || (classBlockSpout != null && classBlockSpout.isInstance(block));
 	}
 	
 	@Override
@@ -137,17 +146,26 @@ public class CompatGalacticraft implements IBlockTransformer {
 	}
 	
 	/*
-	As of Galacticraft 1.12.2-4.0.1.184
-	
+	As of Galacticraft-Legacy 1.12.2-4.0.6 (originally audited against 4.0.1.184)
+
 	- = detected by instanceof micdoodle8.mods.galacticraft.core.blocks.BlockAdvanced (derived in BlockAdvancedTile, BlockTransmitter, BlockTileGC)
 	+ = not detected but no impact or already handled by vanilla compatibility
 	# = needs explicit detection
 		micdoodle8.mods.galacticraft.core.blocks.BlockParaChest
 		micdoodle8.mods.galacticraft.core.blocks.BlockTier1TreasureChest
 		micdoodle8.mods.galacticraft.core.blocks.BlockTorchBase
+		micdoodle8.mods.galacticraft.planets.venus.blocks.BlockSpout (extends Block + ITileEntityProvider)
 	D = handled through dictionary
-	 
-	
+
+	Additions in Galacticraft-Legacy 4.0.x, all verified covered by instanceof BlockAdvanced (via BlockTileGC/BlockMachineBase):
+	-	micdoodle8.mods.galacticraft.core.blocks.BlockMachineBase / BlockMachine4
+	-	micdoodle8.mods.galacticraft.core.blocks.BlockCompactNasaWorkbench
+	-	micdoodle8.mods.galacticraft.core.blocks.BlockEmergencyBox
+	-	micdoodle8.mods.galacticraft.planets.venus.blocks.BlockSolarArrayController / BlockSolarArrayModule / BlockLaserTurret
+	Moved from planets.mars to core (unchanged coverage): BlockTelemetry, BlockScreen, BlockFluidTank, BlockConcealedRedstone, BlockConcealedRepeater
+	BlockTier2/Tier3TreasureChest extend BlockTier1TreasureChest (covered).
+	Tile entity ids are underscored ResourceLocations as of GC-Legacy: 'gc_beam_receiver', 'gc_panel_lighting'.
+
 -	micdoodle8.mods.galacticraft.core.blocks.BlockAirLockFrame gc air lock frame (meta 0) / gc air lock controller (meta 1)
 		frame = no impact
 		controller = no impact
@@ -261,30 +279,36 @@ D-	micdoodle8.mods.galacticraft.planets.mars.BlockTelemetry                     
 	private static final int[]   rotLighting4     = {  8, 25, 21, 20,  2,  3,  6,  7, 16,  1, 29, 28, 10, 11, 14, 15,
 	                                                  24,  9,  5,  4, 18, 19, 22, 23,  0, 17, 13, 12, 26, 27, 30, 31 };
 	
-	@Override
-	public int rotate(final Block block, final int metadata, final NBTTagCompound nbtTileEntity, final ITransformation transformation) {
-		final byte rotationSteps = transformation.getRotationSteps();
-		
-		// multiblock
-		if ( nbtTileEntity != null
-		  && nbtTileEntity.hasKey("mainBlockPosition") ) {
+	// Rewrites the NBT structures shared across the Galacticraft family of mods
+	// (GalaxySpace and More Planets reuse the same conventions):
+	// - 'mainBlockPosition' multiblock dummy link (TileEntityMulti and derived)
+	// - 'HasTarget'/'TargetX/Y/Z' absolute target coordinates (beam reflector)
+	static void rotateGalacticraftFamilyNBT(final NBTTagCompound nbtTileEntity, final ITransformation transformation) {
+		if (nbtTileEntity == null) {
+			return;
+		}
+
+		// multiblock: relink dummy blocks to the transformed main block position
+		if (nbtTileEntity.hasKey("mainBlockPosition")) {
 			final NBTTagCompound tagCompoundMainBlockPosition = nbtTileEntity.getCompoundTag("mainBlockPosition");
 			if ( tagCompoundMainBlockPosition.hasKey("x")
 			  && tagCompoundMainBlockPosition.hasKey("y")
 			  && tagCompoundMainBlockPosition.hasKey("z") ) {
-				final int x = nbtTileEntity.getInteger("x");
-				final int y = nbtTileEntity.getInteger("y");
-				final int z = nbtTileEntity.getInteger("z");
-				final BlockPos blockPosMain = transformation.apply(x, y, z);
-				tagCompoundMainBlockPosition.setInteger("x", blockPosMain.getX());
-				tagCompoundMainBlockPosition.setInteger("y", blockPosMain.getY());
-				tagCompoundMainBlockPosition.setInteger("z", blockPosMain.getZ());
+				final int x = tagCompoundMainBlockPosition.getInteger("x");
+				final int y = tagCompoundMainBlockPosition.getInteger("y");
+				final int z = tagCompoundMainBlockPosition.getInteger("z");
+				// main block outside the jump: leave untouched, the multiblock will re-link or invalidate on tick
+				if (transformation.isInside(x, y, z)) {
+					final BlockPos blockPosMain = transformation.apply(x, y, z);
+					tagCompoundMainBlockPosition.setInteger("x", blockPosMain.getX());
+					tagCompoundMainBlockPosition.setInteger("y", blockPosMain.getY());
+					tagCompoundMainBlockPosition.setInteger("z", blockPosMain.getZ());
+				}
 			}
 		}
-		
+
 		// target for Beam reflector
-		if ( nbtTileEntity != null
-		  && nbtTileEntity.getBoolean("HasTarget") ) {
+		if (nbtTileEntity.getBoolean("HasTarget")) {
 			if ( nbtTileEntity.hasKey("TargetX")
 			  && nbtTileEntity.hasKey("TargetY")
 			  && nbtTileEntity.hasKey("TargetZ") ) {
@@ -301,10 +325,19 @@ D-	micdoodle8.mods.galacticraft.planets.mars.BlockTelemetry                     
 				}
 			}
 		}
-		
-		// beam receiver
-		if ( nbtTileEntity != null
-		  && nbtTileEntity.getString("id").contains("beam receiver")
+	}
+
+	@Override
+	public int rotate(final Block block, final int metadata, final NBTTagCompound nbtTileEntity, final ITransformation transformation) {
+		final byte rotationSteps = transformation.getRotationSteps();
+
+		rotateGalacticraftFamilyNBT(nbtTileEntity, transformation);
+
+		final String idTileEntity = nbtTileEntity == null ? "" : nbtTileEntity.getString("id");
+
+		// beam receiver ('gc_beam_receiver' as of Galacticraft-Legacy 4.0.x)
+		if ( ( idTileEntity.contains("beam_receiver")
+		    || idTileEntity.contains("beam receiver") )
 		  && nbtTileEntity.hasKey("FacingSide") ) {
 			final int facingSide = nbtTileEntity.getInteger("FacingSide");
 			switch (rotationSteps) {
@@ -322,10 +355,10 @@ D-	micdoodle8.mods.galacticraft.planets.mars.BlockTelemetry                     
 			}
 		}
 		
-		// panel lighting
-		if ( nbtTileEntity != null
-		     && nbtTileEntity.getString("id").contains("panel lighting")
-		     && nbtTileEntity.hasKey("meta") ) {
+		// panel lighting ('gc_panel_lighting' as of Galacticraft-Legacy 4.0.x)
+		if ( ( idTileEntity.contains("panel_lighting")
+		    || idTileEntity.contains("panel lighting") )
+		  && nbtTileEntity.hasKey("meta") ) {
 			final int meta = nbtTileEntity.getInteger("meta");
 			
 			if ( metadata == 0
