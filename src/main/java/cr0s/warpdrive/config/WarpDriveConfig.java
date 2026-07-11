@@ -25,6 +25,7 @@ import cr0s.warpdrive.compat.CompatEvilCraft;
 import cr0s.warpdrive.compat.CompatExtraUtilities2;
 import cr0s.warpdrive.compat.CompatForgeMultipart;
 import cr0s.warpdrive.compat.CompatGalacticraft;
+import cr0s.warpdrive.compat.CompatGalacticraftSpaceStations;
 import cr0s.warpdrive.compat.CompatGregTech;
 import cr0s.warpdrive.compat.CompatImmersiveEngineering;
 import cr0s.warpdrive.compat.CompatIndustrialCraft2;
@@ -1658,6 +1659,7 @@ public class WarpDriveConfig {
 		
 		if (isGalacticraftLoaded) {
 			CompatGalacticraft.register();
+			CompatGalacticraftSpaceStations.register();
 		}
 		
 		// final boolean isGregTechLoaded = Loader.isModLoaded("gregtech");
