@@ -117,6 +117,39 @@ public class CelestialObject implements Cloneable, IStringSerializable, ICelesti
 	public CelestialObject(final NBTTagCompound tagCompound) {
 		readFromNBT(tagCompound);
 	}
+
+	// programmatic creation for runtime registration (i.e. Galacticraft space stations),
+	// initializing all client render properties so the object survives a client sync
+	public CelestialObject(final String parId, final String parDisplayName,
+	                       final int parDimensionId, final int parDimensionCenterX, final int parDimensionCenterZ,
+	                       final int parBorderRadiusX, final int parBorderRadiusZ,
+	                       final String parParentId, final int parParentCenterX, final int parParentCenterZ,
+	                       final double parGravity, final boolean parIsBreathable, final String parProvider,
+	                       final float red, final float green, final float blue, final float alpha) {
+		this(parDimensionId, parDimensionCenterX, parDimensionCenterZ,
+		     parBorderRadiusX, parBorderRadiusZ,
+		     parParentId, parParentCenterX, parParentCenterZ);
+		id = parId;
+		displayName = parDisplayName;
+		description = "";
+		gravity = parGravity;
+		isBreathable = parIsBreathable;
+		isHyperspace = false;
+		provider = parProvider;
+
+		// default skybox matching the XML defaults, with a single colored disc as map render
+		backgroundColor = new ColorData(0.0F      , 0.0F       , 0.0F );
+		boxRepeat = 1;
+		boxTextures = new ResourceLocation[0];
+		boxBrightness = 1.0F;
+		baseStarBrightness = 0.0F;
+		vanillaStarBrightness = 1.0F;
+		opacityCelestialObjects = 1.0F;
+		colorFog  = new ColorData(0.7529412F, 0.84705883F, 1.0F );
+		factorFog = new ColorData(0.94F     , 0.94F      , 0.91F);
+		setRenderData = new LinkedHashSet<>(1);
+		setRenderData.add(new RenderData(red, green, blue, alpha));
+	}
 	
 	@Nonnull
 	@Override
@@ -887,6 +920,18 @@ public class CelestialObject implements Cloneable, IStringSerializable, ICelesti
 		public double periodV;
 		public boolean isAdditive;
 		
+		RenderData(final float red, final float green, final float blue, final float alpha) {
+			this.red = red;
+			this.green = green;
+			this.blue = blue;
+			this.alpha = alpha;
+			texture = null;
+			resourceLocation = null;
+			periodU = 1.0D;
+			periodV = 1.0D;
+			isAdditive = false;
+		}
+
 		RenderData(final String location, final Element elementRender) throws InvalidXmlException {
 			try {
 				red = Commons.clamp(0.0F, 1.0F, Float.parseFloat(elementRender.getAttribute("red")));
