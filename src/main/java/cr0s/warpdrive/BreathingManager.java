@@ -2,6 +2,7 @@ package cr0s.warpdrive;
 
 import cr0s.warpdrive.api.IAirContainerItem;
 import cr0s.warpdrive.api.IBreathingHelmet;
+import cr0s.warpdrive.api.IBreathingProvider;
 import cr0s.warpdrive.config.Dictionary;
 import cr0s.warpdrive.config.WarpDriveConfig;
 import cr0s.warpdrive.data.EnumTier;
@@ -13,10 +14,11 @@ import cr0s.warpdrive.render.EntityCamera;
 
 import javax.annotation.Nonnull;
 import java.util.HashMap;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import net.minecraft.block.Block;
-import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
 import net.minecraft.entity.item.EntityItem;
@@ -29,6 +31,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.util.NonNullList;
 import net.minecraft.util.math.BlockPos.MutableBlockPos;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.World;
 
 public class BreathingManager {
@@ -48,7 +51,34 @@ public class BreathingManager {
 	
 	private static final HashMap<UUID, Integer> entity_airBlock = new HashMap<>();
 	private static final HashMap<UUID, Integer> player_airTank = new HashMap<>();
-	
+
+	// compatibility hooks so other mods' life support (i.e. Galacticraft) is honored, see IBreathingProvider
+	private static final List<IBreathingProvider> breathingProviders = new CopyOnWriteArrayList<>();
+
+	public static void registerBreathingProvider(@Nonnull final IBreathingProvider breathingProvider) {
+		if (!breathingProviders.contains(breathingProvider)) {
+			breathingProviders.add(breathingProvider);
+		}
+	}
+
+	private static boolean isProviderAirBlock(@Nonnull final Block block) {
+		for (final IBreathingProvider breathingProvider : breathingProviders) {
+			if (breathingProvider.isBreathableAirBlock(block)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean isEntityInProviderZone(@Nonnull final EntityLivingBase entityLivingBase) {
+		for (final IBreathingProvider breathingProvider : breathingProviders) {
+			if (breathingProvider.isEntityInBreathableZone(entityLivingBase)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	public static boolean hasAirBlock(final EntityLivingBase entityLivingBase, final int x, final int y, final int z) {
 		final MutableBlockPos mutableBlockPos = new MutableBlockPos();
 		for (final VectorI vOffset : vAirOffsets) {
@@ -60,10 +90,42 @@ public class BreathingManager {
 		}
 		return false;
 	}
-	
+
 	public static boolean isAirBlock(@Nonnull final Block block) {
 		return block == WarpDrive.blockAirSource
 		    || block == WarpDrive.blockAirFlow;
+	}
+
+	// Returns true when the entity has breathable air around it.
+	// Set includeProviders to false to restrict the check to WarpDrive's own air system.
+	public static boolean isEntityInBreathableAir(@Nonnull final EntityLivingBase entityLivingBase,
+	                                              final int x, final int y, final int z,
+	                                              final boolean includeProviders) {
+		final MutableBlockPos mutableBlockPos = new MutableBlockPos();
+		for (final VectorI vOffset : vAirOffsets) {
+			mutableBlockPos.setPos(x + vOffset.x, y + vOffset.y, z + vOffset.z);
+			final Block block = entityLivingBase.world.getBlockState(mutableBlockPos).getBlock();
+			if (isAirBlock(block)) {
+				return true;
+			}
+			if ( includeProviders
+			  && !breathingProviders.isEmpty()
+			  && isProviderAirBlock(block) ) {
+				return true;
+			}
+			if (block != Blocks.AIR) {
+				final StateAir stateAir = ChunkHandler.getStateAir(entityLivingBase.world, mutableBlockPos.getX(), mutableBlockPos.getY(), mutableBlockPos.getZ());
+				if ( stateAir == null
+				  || stateAir.concentration > 0 ) {
+					return true;
+				}
+			}
+		}
+		if ( includeProviders
+		  && !breathingProviders.isEmpty() ) {
+			return isEntityInProviderZone(entityLivingBase);
+		}
+		return false;
 	}
 	
 	public static boolean onLivingJoinEvent(final EntityLivingBase entityLivingBase, final int x, final int y, final int z) {
@@ -86,7 +148,22 @@ public class BreathingManager {
 		if (hasValidSetup(entityLivingBase)) {
 			return true;
 		}
-		
+		// compatibility: other mods' breathable zones (i.e. Galacticraft sealed rooms & oxygen bubbles)
+		if (!breathingProviders.isEmpty()) {
+			try {
+				if (isEntityInProviderZone(entityLivingBase)) {
+					return true;
+				}
+			} catch (final Exception exception) {
+				// chunks may be partially loaded during entity join: fail-safe to default behavior
+				if (WarpDriveConfig.LOGGING_BREATHING) {
+					WarpDrive.logger.error(String.format("Exception from breathing provider during entity join %s: %s",
+					                                     Commons.format(entityLivingBase.world, x, y, z),
+					                                     exception ));
+				}
+			}
+		}
+
 		if (WarpDriveConfig.LOGGING_BREATHING) {
 			WarpDrive.logger.warn(String.format("Entity spawn denied %s entityId '%s'",
 			                                    Commons.format(entityLivingBase.world, x, y, z),
@@ -101,28 +178,9 @@ public class BreathingManager {
 			return;
 		}
 		
-		// find an air block
+		// find an air block, including other mods' breathable air
 		final UUID uuidEntity = entityLivingBase.getUniqueID();
-		boolean notInVacuum = false;
-		final MutableBlockPos mutableBlockPos = new MutableBlockPos();
-		IBlockState blockState;
-		Block block;
-		for (final VectorI vOffset : vAirOffsets) {
-			mutableBlockPos.setPos(x + vOffset.x, y + vOffset.y, z + vOffset.z);
-			blockState = entityLivingBase.world.getBlockState(mutableBlockPos);
-			block = blockState.getBlock();
-			if (isAirBlock(block)) {
-				notInVacuum = true;
-				break;
-			} else if (block != Blocks.AIR) {
-				final StateAir stateAir = ChunkHandler.getStateAir(entityLivingBase.world, mutableBlockPos.getX(), mutableBlockPos.getY(), mutableBlockPos.getZ());
-				if ( stateAir == null
-				  || stateAir.concentration > 0 ) {
-					notInVacuum = true;
-					break;
-				}
-			}
-		}
+		final boolean notInVacuum = isEntityInBreathableAir(entityLivingBase, x, y, z, true);
 		
 		Integer air = entity_airBlock.get(uuidEntity);
 		if (notInVacuum) {// no atmosphere with air blocks
@@ -258,7 +316,7 @@ public class BreathingManager {
 			}
 		}
 		
-		// (no air canister or all empty)
+		// (no WarpDrive air canister or all empty)
 		// check IC2 compressed air cells
 		if (WarpDriveConfig.IC2_compressedAir != null) {
 			for (int slotIndex = 0; slotIndex < playerInventory.size(); ++slotIndex) {
@@ -287,13 +345,37 @@ public class BreathingManager {
 		if (!itemStackChestplate.isEmpty()) {
 			final Item itemChestplate = itemStackChestplate.getItem();
 			if (itemChestplate == WarpDrive.itemWarpArmor[EnumTier.SUPERIOR.getIndex()][2]) {
-				return electrolyseIceToAir(entityLivingBase);
+				final int ticksAir = electrolyseIceToAir(entityLivingBase);
+				if (ticksAir > 0) {
+					return ticksAir;
+				}
+			}
+		}
+
+		// compatibility: other mods' air supplies (i.e. Galacticraft oxygen tanks)
+		for (final IBreathingProvider breathingProvider : breathingProviders) {
+			final int ticksAir = breathingProvider.consumeAir(entityPlayer);
+			if (ticksAir > 0) {
+				return ticksAir;
 			}
 		}
 		return 0;
 	}
 	
 	public static boolean hasValidSetup(@Nonnull final EntityLivingBase entityLivingBase) {
+		if (hasValidSetupWarpDrive(entityLivingBase)) {
+			return true;
+		}
+		// compatibility: other mods' breathing equipment (i.e. Galacticraft oxygen gear)
+		for (final IBreathingProvider breathingProvider : breathingProviders) {
+			if (breathingProvider.hasValidSetup(entityLivingBase)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean hasValidSetupWarpDrive(@Nonnull final EntityLivingBase entityLivingBase) {
 		final ItemStack itemStackHelmet = entityLivingBase.getItemStackFromSlot(EntityEquipmentSlot.HEAD);
 		if (entityLivingBase instanceof EntityPlayer) {
 			final ItemStack itemStackChestplate = entityLivingBase.getItemStackFromSlot(EntityEquipmentSlot.CHEST);
@@ -309,7 +391,7 @@ public class BreathingManager {
 				return (itemHelmet instanceof IBreathingHelmet && ((IBreathingHelmet) itemHelmet).canBreath(entityLivingBase))
 				    || Dictionary.ITEMS_BREATHING_HELMET.contains(itemHelmet);
 			}
-			
+
 		} else {
 			// need just a working breathing helmet to breath
 			if (!itemStackHelmet.isEmpty()) {
@@ -319,6 +401,41 @@ public class BreathingManager {
 			}
 		}
 		return false;
+	}
+
+	// Returns true when WarpDrive's own systems are keeping that entity alive: nearby air blocks,
+	// remaining air credits from a previous breath, or a valid WarpDrive setup with air reserves.
+	// Other mods' protections are deliberately excluded: this is used to answer "can WarpDrive
+	// justify cancelling another mod's suffocation damage" (i.e. Galacticraft's), and that mod
+	// already knows about its own protections.
+	public static boolean isProtectedByWarpDrive(@Nonnull final EntityLivingBase entityLivingBase) {
+		if (Dictionary.isLivingWithoutAir(entityLivingBase)) {
+			return true;
+		}
+
+		final int x = MathHelper.floor(entityLivingBase.posX);
+		final int y = MathHelper.floor(entityLivingBase.posY);
+		final int z = MathHelper.floor(entityLivingBase.posZ);
+		if (isEntityInBreathableAir(entityLivingBase, x, y, z, false)) {
+			return true;
+		}
+
+		// remaining air credits grant a grace period, matching our own asphyxia timing
+		final UUID uuidEntity = entityLivingBase.getUniqueID();
+		final Integer airBlockTicks = entity_airBlock.get(uuidEntity);
+		if (airBlockTicks != null && airBlockTicks > 0) {
+			return true;
+		}
+
+		if (entityLivingBase instanceof EntityPlayer) {
+			final Integer airTankTicks = player_airTank.get(uuidEntity);
+			if (airTankTicks != null && airTankTicks > 0) {
+				return true;
+			}
+			return hasValidSetupWarpDrive(entityLivingBase)
+			    && getAirReserveRatio((EntityPlayer) entityLivingBase) > 0.0F;
+		}
+		return hasValidSetupWarpDrive(entityLivingBase);
 	}
 	
 	public static float getAirReserveRatio(@Nonnull final EntityPlayer entityPlayer) {
@@ -484,5 +601,8 @@ public class BreathingManager {
 	
 	public static void onEntityLivingDeath(@Nonnull final EntityLivingBase entityLivingBase) {
 		entity_airBlock.remove(entityLivingBase.getUniqueID());
+		for (final IBreathingProvider breathingProvider : breathingProviders) {
+			breathingProvider.onEntityLivingDeath(entityLivingBase);
+		}
 	}
 }
