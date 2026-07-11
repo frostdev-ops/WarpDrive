@@ -25,6 +25,7 @@ import cr0s.warpdrive.compat.CompatEvilCraft;
 import cr0s.warpdrive.compat.CompatExtraUtilities2;
 import cr0s.warpdrive.compat.CompatForgeMultipart;
 import cr0s.warpdrive.compat.CompatGalacticraft;
+import cr0s.warpdrive.compat.CompatGalacticraftCelestial;
 import cr0s.warpdrive.compat.CompatGalacticraftSpaceStations;
 import cr0s.warpdrive.compat.CompatGregTech;
 import cr0s.warpdrive.compat.CompatImmersiveEngineering;
@@ -1792,9 +1793,15 @@ public class WarpDriveConfig {
 		FillerManager.load(fileConfigDirectory);
 		LootManager.load(fileConfigDirectory);
 		StructureManager.load(fileConfigDirectory);
-		
+
 		Dictionary.apply();
 		WarpDriveDataFixer.apply();
+
+		// register our space dimensions as Galacticraft rocket destinations,
+		// after both mods (and Galacticraft addons) registered their own celestial bodies
+		if (isGalacticraftLoaded) {
+			CompatGalacticraftCelestial.register();
+		}
 	}
 	
 	private static void loadIC2() {
