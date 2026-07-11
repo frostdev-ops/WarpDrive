@@ -199,6 +199,11 @@ public class Dictionary {
 			config.get("block_tags", "galacticraftplanets:miner_base_full"                  , "Anchor StopMining").getString(); // too complex, no reason to support
 			config.get("block_tags", "galacticraftplanets:telepad_fake"                     , "PlaceLater").getString(); // glitch after movement (no more collision?)
 			config.get("block_tags", "galacticraftplanets:telepad_short"                    , "PlaceNormal").getString(); // glitch after movement (no more collision?)
+			config.get("block_tags", "galaxyspace:boss_spawner_ceres"                       , "Anchor StopMining").getString(); // includes hard links to the boss room
+			config.get("block_tags", "galaxyspace:boss_spawner_io"                          , "Anchor StopMining").getString(); // includes hard links to the boss room
+			config.get("block_tags", "moreplanets:chalos_dungeon_spawner"                   , "Anchor StopMining").getString(); // includes hard links to the boss room
+			config.get("block_tags", "moreplanets:diona_dungeon_spawner"                    , "Anchor StopMining").getString(); // includes hard links to the boss room
+			config.get("block_tags", "moreplanets:nibiru_dungeon_spawner"                   , "Anchor StopMining").getString(); // includes hard links to the boss room
 			config.get("block_tags", "malisisdoors:forcefielddoor"                          , "Anchor NoBlink").getString(); // creative
 			config.get("block_tags", "malisisdoors:rustyhatch"                              , "Anchor").getString(); // random crashes on 1.7.10
 			config.get("block_tags", "nex:nether_portal"                                    , "Anchor StopMining").getString();
@@ -382,7 +387,14 @@ public class Dictionary {
 			config.get("entity_tags", "ic2:itnt"                               , "NoMass NonLivingTarget").getString(); // IC2 Experimental & Classic
 			config.get("entity_tags", "ic2:sticky_dynamite"                    , "NoMass NonLivingTarget").getString(); // IC2 Experimental
 			config.get("entity_tags", "ic2:dynamite"                           , "NoMass NonLivingTarget").getString(); // IC2 Experimental & Classic
-			
+
+			// Galacticraft vehicles with their own teleport logic or absolute coordinates in NBT
+			// note: unignited rockets ride along fine, mid-launch ones are guarded by CompatGalacticraftCelestial
+			config.get("entity_tags", "galacticraftcore:lander"                , "Anchor").getString(); // mid-descent vehicle
+			config.get("entity_tags", "galacticraftplanets:astro_miner"        , "Anchor").getString(); // absolute mining waypoints in NBT
+			config.get("entity_tags", "galacticraftplanets:entry_pod"          , "Anchor").getString(); // mid-descent vehicle
+			config.get("entity_tags", "galacticraftplanets:entry_pod_venus"    , "Anchor").getString(); // mid-descent vehicle
+
 			// undead and dummies
 			config.get("entity_tags", "minecraft:armor_stand"                  , "LivingWithoutAir").getString();
 			config.get("entity_tags", "minecraft:creeper"                      , "LivingWithoutAir").getString();

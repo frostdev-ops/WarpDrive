@@ -34,6 +34,7 @@ import cr0s.warpdrive.compat.CompatIndustrialForegoing;
 import cr0s.warpdrive.compat.CompatIronChest;
 import cr0s.warpdrive.compat.CompatMekanism;
 import cr0s.warpdrive.compat.CompatMetalChests;
+import cr0s.warpdrive.compat.CompatMorePlanets;
 import cr0s.warpdrive.compat.CompatMysticalAgriculture;
 import cr0s.warpdrive.compat.CompatNatura;
 import cr0s.warpdrive.compat.CompatOpenComputers;
@@ -1692,6 +1693,11 @@ public class WarpDriveConfig {
 			CompatMetalChests.register();
 		}
 		
+		final boolean isMorePlanetsLoaded = Loader.isModLoaded("moreplanets");
+		if (isMorePlanetsLoaded) {
+			CompatMorePlanets.register();
+		}
+
 		final boolean isMysticalAgricultureLoaded = Loader.isModLoaded("mysticalagriculture");
 		if (isMysticalAgricultureLoaded) {
 			CompatMysticalAgriculture.register();

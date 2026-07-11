@@ -853,6 +853,7 @@ warpdrive.compat.guide.block_detected_on_board=%1$s detected on board!
 warpdrive.compat.guide.quantum_field_interference=Quantum field interference detected!
 warpdrive.compat.guide.draconic_evolution_portal=Portal detected!
 warpdrive.compat.guide.stargate_is_active=Stargate is active (%1$s)!
+warpdrive.compat.guide.rocket_launch_in_progress=A rocket is mid-launch at (%1$d %2$d %3$d)!
 
 warpdrive.enan_reactor.status_line.missing_reactor_core=Missing Enantiomorphic reactor core.
 warpdrive.enan_reactor.status_line.missing_stabilization_laser=Missing stabilization laser %1$d.
