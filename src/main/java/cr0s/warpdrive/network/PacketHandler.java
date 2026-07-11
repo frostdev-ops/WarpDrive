@@ -5,6 +5,7 @@ import cr0s.warpdrive.WarpDrive;
 import cr0s.warpdrive.config.Dictionary;
 import cr0s.warpdrive.config.WarpDriveConfig;
 import cr0s.warpdrive.data.CelestialObject;
+import cr0s.warpdrive.data.CelestialObjectManager;
 import cr0s.warpdrive.data.CloakManager;
 import cr0s.warpdrive.data.CloakedArea;
 import cr0s.warpdrive.data.GlobalPosition;
@@ -28,11 +29,13 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.network.Packet;
 import net.minecraft.network.play.server.*;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.potion.PotionEffect;
 import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 
+import net.minecraftforge.fml.common.FMLCommonHandler;
 import net.minecraftforge.fml.common.network.NetworkRegistry;
 import net.minecraftforge.fml.common.network.NetworkRegistry.TargetPoint;
 import net.minecraftforge.fml.common.network.simpleimpl.SimpleNetworkWrapper;
@@ -254,7 +257,22 @@ public class PacketHandler {
 		final MessageClientSync messageClientSync = new MessageClientSync(entityPlayerMP, celestialObject);
 		simpleNetworkManager.sendTo(messageClientSync, entityPlayerMP);
 	}
-	
+
+	// resend the celestial map to all connected players, i.e. after a runtime celestial object registration
+	public static void sendClientSyncToAll() {
+		final MinecraftServer server = FMLCommonHandler.instance().getMinecraftServerInstance();
+		if (server == null) {
+			return;
+		}
+		for (final EntityPlayerMP entityPlayerMP : server.getPlayerList().getPlayers()) {
+			final CelestialObject celestialObject = CelestialObjectManager.get(
+					entityPlayerMP.world,
+					(int) Math.floor(entityPlayerMP.posX),
+					(int) Math.floor(entityPlayerMP.posZ) );
+			sendClientSync(entityPlayerMP, celestialObject);
+		}
+	}
+
 	public static Packet<?> getPacketForThisEntity(final Entity entity) {
 		// skip buggy entities
 		if (Dictionary.isNoReveal(entity)) {

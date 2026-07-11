@@ -269,6 +269,64 @@ public class CelestialObjectManager extends XmlFileManager {
 		SERVER.addOrUpdateInRegistry(celestialObject, true);
 		SERVER.rebuildAndValidate(true);
 	}
+
+	// Runtime registration for dynamically created dimensions (i.e. Galacticraft space stations).
+	// Unlike updateInRegistry, a validation failure is rolled back instead of crashing a live server.
+	public static boolean registerRuntimeCelestialObject(@Nonnull final CelestialObject celestialObject) {
+		final CelestialObject celestialObjectPrevious = SERVER.celestialObjectsById.get(celestialObject.id);
+		try {
+			SERVER.addOrUpdateInRegistry(celestialObject, true);
+			SERVER.rebuildAndValidate(true);
+			return true;
+		} catch (final RuntimeException exception) {
+			WarpDrive.logger.error(String.format("Failed to register runtime celestial object %s (dimension %d), rolling back: %s",
+			                                     celestialObject.id,
+			                                     celestialObject.dimensionId,
+			                                     exception.getMessage() ));
+			// restore the previous state, which was valid
+			if (celestialObjectPrevious == null) {
+				SERVER.celestialObjectsById.remove(celestialObject.id);
+			} else {
+				SERVER.addOrUpdateInRegistry(celestialObjectPrevious, true);
+			}
+			try {
+				SERVER.rebuildAndValidate(true);
+			} catch (final RuntimeException exceptionRollback) {
+				WarpDrive.logger.error(String.format("Failed to rollback runtime celestial object %s: %s",
+				                                     celestialObject.id,
+				                                     exceptionRollback.getMessage() ));
+			}
+			return false;
+		}
+	}
+
+	public static boolean unregisterRuntimeCelestialObject(@Nonnull final String id) {
+		final CelestialObject celestialObjectRemoved = SERVER.celestialObjectsById.remove(id);
+		if (celestialObjectRemoved == null) {
+			return false;
+		}
+		SERVER.rebuildAndValidate(true);
+		return true;
+	}
+
+	public static boolean isRegistered(final int dimensionId) {
+		return getByDimensionId(false, dimensionId) != null;
+	}
+
+	public static CelestialObject getByDimensionId(final boolean isRemote, final int dimensionId) {
+		for (final CelestialObject celestialObject : (isRemote ? CLIENT : SERVER).celestialObjects) {
+			if ( celestialObject != null
+			  && !celestialObject.isVirtual()
+			  && celestialObject.dimensionId == dimensionId ) {
+				return celestialObject;
+			}
+		}
+		return null;
+	}
+
+	public static CelestialObject[] getRegistry(final boolean isRemote) {
+		return (isRemote ? CLIENT : SERVER).celestialObjects;
+	}
 	
 	public static NBTBase writeClientSync(final EntityPlayerMP entityPlayerMP, final CelestialObject celestialObject) {
 		final NBTTagList nbtTagList = new NBTTagList();
