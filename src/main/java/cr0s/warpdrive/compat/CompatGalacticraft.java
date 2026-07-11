@@ -1,7 +1,9 @@
 package cr0s.warpdrive.compat;
 
+import cr0s.warpdrive.BreathingManager;
 import cr0s.warpdrive.WarpDrive;
 import cr0s.warpdrive.api.IBlockTransformer;
+import cr0s.warpdrive.api.IBreathingProvider;
 import cr0s.warpdrive.api.ITransformation;
 import cr0s.warpdrive.api.WarpDriveText;
 import cr0s.warpdrive.config.WarpDriveConfig;
@@ -9,12 +11,21 @@ import cr0s.warpdrive.data.CelestialObject;
 import cr0s.warpdrive.data.CelestialObjectManager;
 
 import javax.annotation.Nonnull;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.entity.player.EntityPlayerMP;
+import net.minecraft.inventory.EntityEquipmentSlot;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NBTBase;
 import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.tileentity.TileEntity;
@@ -30,11 +41,19 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 
 import micdoodle8.mods.galacticraft.api.event.oxygen.GCCoreOxygenSuffocationEvent;
+import micdoodle8.mods.galacticraft.api.item.IBreathableArmor;
+import micdoodle8.mods.galacticraft.api.item.IItemOxygenSupply;
+import micdoodle8.mods.galacticraft.core.GCBlocks;
+import micdoodle8.mods.galacticraft.core.GCItems;
 import micdoodle8.mods.galacticraft.core.entities.player.GCPlayerStats;
 import micdoodle8.mods.galacticraft.core.entities.player.GCPlayerStatsClient;
+import micdoodle8.mods.galacticraft.core.items.ItemOxygenTank;
+import micdoodle8.mods.galacticraft.core.proxy.ClientProxyCore;
+import micdoodle8.mods.galacticraft.core.util.OxygenUtil;
+import micdoodle8.mods.galacticraft.core.wrappers.PlayerGearData;
 
-public class CompatGalacticraft implements IBlockTransformer {
-	
+public class CompatGalacticraft implements IBlockTransformer, IBreathingProvider {
+
 	public static CompatGalacticraft INSTANCE;
 	
 	private static Class<?> classBlockAdvanced;
@@ -54,6 +73,7 @@ public class CompatGalacticraft implements IBlockTransformer {
 
 			INSTANCE = new CompatGalacticraft();
 			WarpDriveConfig.registerBlockTransformer("Galacticraft", INSTANCE);
+			BreathingManager.registerBreathingProvider(INSTANCE);
 
 			MinecraftForge.EVENT_BUS.register(INSTANCE);
 		} catch(final ClassNotFoundException exception) {
@@ -68,41 +88,54 @@ public class CompatGalacticraft implements IBlockTransformer {
 		}
 	}
 	
-	// disable breathing suffocation event server side
+	// Cancel the Galacticraft suffocation when WarpDrive is protecting that entity (server side).
+	// Protection is a two-way OR: either mod's life support keeps the entity alive.
+	// When neither protects, Galacticraft suffocation applies normally (i.e. an unequipped
+	// player in an unsealed Moon base suffocates like in vanilla Galacticraft).
 	@SubscribeEvent
 	public void onGCCoreOxygenSuffocationEventPre(final GCCoreOxygenSuffocationEvent.Pre event) {
 		assert event.getEntity() != null;
-		
+
 		final Entity entity = event.getEntity();
 		final int x = MathHelper.floor(entity.posX);
 		final int z = MathHelper.floor(entity.posZ);
 		final CelestialObject celestialObject = CelestialObjectManager.get(entity.world, x, z);
 		if (celestialObject == null) {
-			// unregistered dimension => exit
+			// unregistered dimension => vanilla Galacticraft behavior
 			return;
 		}
-		
+
+		if ( !celestialObject.hasAtmosphere()
+		  && event.getEntityLiving() != null
+		  && !BreathingManager.isProtectedByWarpDrive(event.getEntityLiving()) ) {
+			// non breathable dimension and WarpDrive doesn't protect => Galacticraft suffocation applies
+			return;
+		}
+
 		final GCPlayerStats gcPlayerStats = GCPlayerStats.get(event.getEntity());
 		if (gcPlayerStats != null) {
+			// suppress the oxygen warning HUD and related packet flapping
+			gcPlayerStats.setOxygenSetupValid(true);
 			gcPlayerStats.setLastOxygenSetupValid(true);
 		}
-		
+
 		event.setCanceled(true);
 	}
-	
-	// disable breathing alarm overlay client side
+
+	// Suppress the breathing alarm overlay when protected (client side), mirroring the
+	// server side decision from client synchronized state only (blocks, air data, inventory).
 	@SideOnly(Side.CLIENT)
 	@SubscribeEvent(priority = EventPriority.LOWEST)
 	public void onLivingUpdate(@Nonnull final LivingUpdateEvent event) {
 		if (Minecraft.getMinecraft().player == null) {
 			return;
 		}
-		
+
 		final EntityLivingBase entityLivingBase = event.getEntityLiving();
 		if (entityLivingBase != Minecraft.getMinecraft().player) {
 			return;
 		}
-		
+
 		final int x = MathHelper.floor(entityLivingBase.posX);
 		final int z = MathHelper.floor(entityLivingBase.posZ);
 		final CelestialObject celestialObject = CelestialObjectManager.get(entityLivingBase.world, x, z);
@@ -110,11 +143,163 @@ public class CompatGalacticraft implements IBlockTransformer {
 			// unregistered dimension => exit
 			return;
 		}
-		
+
+		if ( !celestialObject.hasAtmosphere()
+		  && !isClientProtectedByWarpDrive(Minecraft.getMinecraft().player) ) {
+			// non breathable dimension and WarpDrive doesn't protect => Galacticraft alarm applies
+			return;
+		}
+
 		final GCPlayerStatsClient stats = GCPlayerStatsClient.get(Minecraft.getMinecraft().player);
 		if (stats != null) {
 			stats.setOxygenSetupValid(true);
 		}
+	}
+
+	@SideOnly(Side.CLIENT)
+	private static boolean isClientProtectedByWarpDrive(@Nonnull final EntityPlayer entityPlayer) {
+		final int x = MathHelper.floor(entityPlayer.posX);
+		final int y = MathHelper.floor(entityPlayer.posY);
+		final int z = MathHelper.floor(entityPlayer.posZ);
+		if (BreathingManager.isEntityInBreathableAir(entityPlayer, x, y, z, false)) {
+			return true;
+		}
+		return BreathingManager.hasValidSetup(entityPlayer)
+		    && BreathingManager.getAirReserveRatio(entityPlayer) > 0.0F;
+	}
+
+	// Returns true when Galacticraft life support is keeping that player alive, from client
+	// synchronized state (gear data, armor slots, blocks). Used to mute WarpDrive's air HUD alarms.
+	@SideOnly(Side.CLIENT)
+	public static boolean isClientProtectedByGC(@Nonnull final EntityPlayer entityPlayer) {
+		// Galacticraft extended inventory gear (mask + gear + at least one tank), -1 means absent.
+		// Note: gear data for the local player is kept synchronized by Galacticraft's own HUD.
+		final PlayerGearData gearData = ClientProxyCore.playerItemData.get(entityPlayer.getName());
+		if ( gearData != null
+		  && gearData.getMask() > -1
+		  && gearData.getGear() > -1
+		  && ( gearData.getLeftTank() > -1
+		    || gearData.getRightTank() > -1 ) ) {
+			return true;
+		}
+
+		// vanilla armor slot breathable helmets (i.e. More Planets), substituting the oxygen mask
+		final ItemStack itemStackHelmet = entityPlayer.getItemStackFromSlot(EntityEquipmentSlot.HEAD);
+		if ( !itemStackHelmet.isEmpty()
+		  && itemStackHelmet.getItem() instanceof IBreathableArmor ) {
+			final IBreathableArmor breathableArmor = (IBreathableArmor) itemStackHelmet.getItem();
+			if ( breathableArmor.handleGearType(IBreathableArmor.EnumGearType.HELMET)
+			  && breathableArmor.canBreathe(itemStackHelmet, entityPlayer, IBreathableArmor.EnumGearType.HELMET) ) {
+				return true;
+			}
+		}
+
+		// client visible Galacticraft sealed rooms & oxygen bubbles
+		return OxygenUtil.isAABBInBreathableAirBlock(entityPlayer)
+		    || OxygenUtil.inOxygenBubble(entityPlayer.world, entityPlayer.posX, entityPlayer.posY + entityPlayer.getEyeHeight(), entityPlayer.posZ);
+	}
+
+	// ----- IBreathingProvider -----
+
+	private static final int GC_TANK_DAMAGE_PER_CONSUME = 20;
+	// Galacticraft drains 1 tank damage per 9 ticks in its own dimensions: keep the same aggregate rate
+	private static final int GC_AIR_TICKS_PER_TANK_DAMAGE = 9;
+
+	private static final int ZONE_CHECK_INTERVAL_TICKS = 10;
+	private static final int ZONE_CHECK_PURGE_SIZE = 512;
+	private static final int ZONE_CHECK_PURGE_AGE_TICKS = 6000; // 5 mn
+
+	// per entity throttling of the breathable zone check, packing (worldTime << 1 | result) by entity id
+	private static final HashMap<UUID, Long> zoneCheckCache = new HashMap<>();
+
+	@Override
+	public boolean isBreathableAirBlock(final Block block) {
+		return block == GCBlocks.breatheableAir
+		    || block == GCBlocks.brightBreatheableAir;
+	}
+
+	@Override
+	public boolean isEntityInBreathableZone(final EntityLivingBase entityLivingBase) {
+		final long timeWorld = entityLivingBase.world.getTotalWorldTime();
+		final UUID uuidEntity = entityLivingBase.getUniqueID();
+		final Long cachedValue = zoneCheckCache.get(uuidEntity);
+		if (cachedValue != null) {
+			final long timeCached = cachedValue >> 1;
+			if ( timeWorld >= timeCached
+			  && timeWorld - timeCached < ZONE_CHECK_INTERVAL_TICKS ) {
+				return (cachedValue & 1L) != 0L;
+			}
+		}
+
+		final boolean isBreathable = OxygenUtil.isAABBInBreathableAirBlock(entityLivingBase)
+		                          || OxygenUtil.inOxygenBubble(entityLivingBase.world, entityLivingBase.posX,
+		                                                       entityLivingBase.posY + entityLivingBase.getEyeHeight(), entityLivingBase.posZ);
+
+		if (zoneCheckCache.size() > ZONE_CHECK_PURGE_SIZE) {
+			final Iterator<Map.Entry<UUID, Long>> iterator = zoneCheckCache.entrySet().iterator();
+			while (iterator.hasNext()) {
+				if (timeWorld - (iterator.next().getValue() >> 1) > ZONE_CHECK_PURGE_AGE_TICKS) {
+					iterator.remove();
+				}
+			}
+		}
+		zoneCheckCache.put(uuidEntity, (timeWorld << 1) | (isBreathable ? 1L : 0L));
+		return isBreathable;
+	}
+
+	@Override
+	public boolean hasValidSetup(final EntityLivingBase entityLivingBase) {
+		return entityLivingBase instanceof EntityPlayerMP
+		    && OxygenUtil.hasValidOxygenSetup((EntityPlayerMP) entityLivingBase);
+	}
+
+	@Override
+	public int consumeAir(final EntityPlayerMP entityPlayerMP) {
+		final GCPlayerStats gcPlayerStats = GCPlayerStats.get(entityPlayerMP);
+		if (gcPlayerStats == null) {
+			return 0;
+		}
+		final int ticksAir = consumeOxygenTank(gcPlayerStats.getTankInSlot1());
+		if (ticksAir > 0) {
+			return ticksAir;
+		}
+		return consumeOxygenTank(gcPlayerStats.getTankInSlot2());
+	}
+
+	private static int consumeOxygenTank(final ItemStack itemStackTank) {
+		if ( itemStackTank == null
+		  || itemStackTank.isEmpty() ) {
+			return 0;
+		}
+		final Item itemTank = itemStackTank.getItem();
+
+		// creative infinite supply: grant air without draining
+		if (itemTank == GCItems.oxygenCanisterInfinite) {
+			return GC_TANK_DAMAGE_PER_CONSUME * GC_AIR_TICKS_PER_TANK_DAMAGE;
+		}
+
+		// standard Galacticraft tanks are damage based: remaining oxygen = maxDamage - damage
+		if (itemTank instanceof ItemOxygenTank) {
+			final int oxygenRemaining = itemStackTank.getMaxDamage() - itemStackTank.getItemDamage();
+			if (oxygenRemaining <= 0) {
+				return 0;
+			}
+			final int drained = Math.min(GC_TANK_DAMAGE_PER_CONSUME, oxygenRemaining);
+			itemStackTank.setItemDamage(itemStackTank.getItemDamage() + drained);
+			return drained * GC_AIR_TICKS_PER_TANK_DAMAGE;
+		}
+
+		// addon supply items (i.e. GalaxySpace EPP tanks implement it alongside ItemOxygenTank)
+		if (itemTank instanceof IItemOxygenSupply) {
+			final int drained = ((IItemOxygenSupply) itemTank).discharge(itemStackTank, GC_TANK_DAMAGE_PER_CONSUME);
+			return drained * GC_AIR_TICKS_PER_TANK_DAMAGE;
+		}
+		return 0;
+	}
+
+	@Override
+	public void onEntityLivingDeath(final EntityLivingBase entityLivingBase) {
+		zoneCheckCache.remove(entityLivingBase.getUniqueID());
 	}
 	
 	@Override

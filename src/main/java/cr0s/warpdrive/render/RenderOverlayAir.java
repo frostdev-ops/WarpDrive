@@ -1,5 +1,6 @@
 package cr0s.warpdrive.render;
 
+import cr0s.warpdrive.compat.CompatGalacticraft;
 import cr0s.warpdrive.compat.CompatMatterOverdrive;
 import cr0s.warpdrive.BreathingManager;
 import cr0s.warpdrive.api.ExceptionChunkNotLoaded;
@@ -72,14 +73,23 @@ public class RenderOverlayAir {
 		final int rangeToVoid = getRangeToVoid(entityPlayer, x, y, z);
 		final boolean hasValidSetup = BreathingManager.hasValidSetup(entityPlayer);
 		final float ratioAirReserve = BreathingManager.getAirReserveRatio(entityPlayer);
-		
+
+		// bypass when Galacticraft life support is active
+		final boolean isProtectedByGC = WarpDriveConfig.isGalacticraftLoaded
+		                             && CompatGalacticraft.isClientProtectedByGC(entityPlayer);
+		if ( !hasValidSetup
+		  && isProtectedByGC ) {// player is running on Galacticraft gear only: their HUD owns the screen
+			return;
+		}
+
 		// start rendering
 		GlStateManager.enableBlend();
-		
+
 		// show splash message
 		int alpha = 255;
-		if ( rangeToVoid >= 0
-		  || entityPlayer.ticksExisted < WARNING_ON_JOIN_TICKS ) {
+		if ( ( rangeToVoid >= 0
+		    || entityPlayer.ticksExisted < WARNING_ON_JOIN_TICKS )
+		  && !isProtectedByGC ) {// no alarm when Galacticraft keeps the player alive (i.e. sealed room with empty canisters)
 			if (!hasValidSetup) {
 				alpha = RenderCommons.drawSplashAlarm(width, height, "warpdrive.breathing.alarm", "warpdrive.breathing.invalid_setup");
 			} else if (ratioAirReserve <= 0.0F) {

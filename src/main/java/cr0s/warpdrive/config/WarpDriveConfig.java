@@ -148,6 +148,7 @@ public class WarpDriveConfig {
 	public static boolean              isCCTweakedLoaded = false;
 	public static boolean              isEnderIOLoaded = false;
 	public static boolean              isForgeMultipartLoaded = false;
+	public static boolean              isGalacticraftLoaded = false;
 	public static boolean              isGregtechLoaded = false;
 	public static boolean              isICBMClassicLoaded = false;
 	public static boolean              isIndustrialCraft2Loaded = false;
@@ -803,6 +804,7 @@ public class WarpDriveConfig {
 		// read mod dependencies for recipes
 		isAdvancedRepulsionSystemLoaded = Loader.isModLoaded("AdvancedRepulsionSystems");
 		isForgeMultipartLoaded = Loader.isModLoaded("forgemultipartcbe");
+		isGalacticraftLoaded = Loader.isModLoaded("galacticraftcore");
 		isICBMClassicLoaded = Loader.isModLoaded("icbmclassic");
 		isMatterOverdriveLoaded = Loader.isModLoaded("matteroverdrive");
 		isNotEnoughItemsLoaded = Loader.isModLoaded("NotEnoughItems");
@@ -1654,8 +1656,7 @@ public class WarpDriveConfig {
 			CompatEvilCraft.register();
 		}
 		
-		final boolean isGalacticraftCoreLoaded = Loader.isModLoaded("galacticraftcore");
-		if (isGalacticraftCoreLoaded) {
+		if (isGalacticraftLoaded) {
 			CompatGalacticraft.register();
 		}
 		
