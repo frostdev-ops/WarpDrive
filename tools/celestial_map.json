@@ -1,0 +1,329 @@
+{
+  "mods": "galacticraftcore",
+  "hyperspace": {
+    "id": "Hyperspace",
+    "name": "Hyperspace",
+    "description": "Your ship warp bubble is your\\nonly protection.",
+    "center": [0, 0],
+    "size": 800000,
+    "dim": -100,
+    "breathable": false,
+    "hyperspace": true,
+    "gravity": "legacyHyperspace",
+    "provider": "WarpDriveHyperspace",
+    "skybox": {
+      "backgroundColor": [0.04, 0.0, 0.08],
+      "starBrightnessBase": 0.2,
+      "starBrightnessVanilla": 0.0,
+      "celestialObjectOpacity": 0.3,
+      "fogColor": [0.06, 0.0, 0.1],
+      "fogFactor": [0.0, 0.0, 0.0]
+    },
+    "children": [
+      {
+        "id": "Sol",
+        "name": "Sol",
+        "description": "The home star system.\\nReal worlds, real resources.",
+        "center": [-95000, -95000],
+        "size": 180000,
+        "dim": -101,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.0, 0.0, 0.0],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.0, 0.0, 0.0],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "Sol Star", "name": "Sol", "center": [0, 0], "size": 10000,
+           "renders": [[1.0, 0.8, 0.25, 1.0], [1.0, 0.9, 0.3, 0.35], [1.0, 0.8, 0.25, 0.2]]},
+
+          {"id": "Mercury", "name": "Mercury", "center": [23000, 0], "size": 6000,
+           "dim": -1005, "renders": [[0.6, 0.55, 0.5, 1.0]]},
+          {"id": "Venus", "name": "Venus", "center": [14340, 17982], "size": 9000,
+           "dim": -31, "renders": [[0.85, 0.75, 0.4, 1.0]]},
+          {"id": "Earth", "name": "Earth", "center": [-5118, 22423], "size": 12000,
+           "dim": 0, "breathable": true,
+           "renders": [[0.3, 0.5, 0.8, 1.0], [0.7, 0.8, 1.0, 0.15]],
+           "children": [
+             {"id": "Nether", "name": "Nether", "center": [0, 0], "size": 4000,
+              "dim": -1, "breathable": true, "renders": [[0.6, 0.2, 0.15, 1.0]]}
+           ]},
+          {"id": "Moon", "name": "Moon", "center": [-20722, 9979], "size": 5000,
+           "dim": -28, "renders": [[0.82, 0.82, 0.82, 1.0]]},
+          {"id": "Mars", "name": "Mars", "center": [-20722, -9979], "size": 9000,
+           "dim": -29, "renders": [[0.8, 0.4, 0.25, 1.0]]},
+          {"id": "Phobos", "name": "Phobos", "center": [-5118, -22423], "size": 4000,
+           "dim": -1012, "renders": [[0.45, 0.4, 0.38, 1.0]]},
+          {"id": "Deimos", "name": "Deimos", "center": [-20280, -25391], "size": 4000,
+           "dim": -1013, "renders": [[0.55, 0.5, 0.46, 1.0]]},
+          {"id": "Asteroid Belt", "name": "Asteroid Belt", "center": [14340, -17982], "size": 10000,
+           "dim": -30, "renders": [[0.5, 0.45, 0.4, 1.0]]},
+
+          {"id": "Ceres", "name": "Ceres", "center": [39606, 16745], "size": 4500,
+           "dim": -1007, "renders": [[0.62, 0.6, 0.58, 1.0]]},
+          {"id": "Jupiter", "name": "Jupiter", "center": [27287, 33233], "size": 14000,
+           "dim": -1026, "renders": [[0.85, 0.7, 0.5, 1.0]]},
+          {"id": "Io", "name": "Io", "center": [8718, 42107], "size": 5000,
+           "dim": -1014, "renders": [[0.9, 0.85, 0.4, 1.0]]},
+          {"id": "Europa", "name": "Europa", "center": [-11849, 41335], "size": 5000,
+           "dim": -1015, "renders": [[0.85, 0.9, 0.95, 1.0]]},
+          {"id": "Ganymede", "name": "Ganymede", "center": [-29701, 31094], "size": 5500,
+           "dim": -1016, "renders": [[0.6, 0.55, 0.5, 1.0]]},
+          {"id": "Callisto", "name": "Callisto", "center": [-40749, 13730], "size": 5000,
+           "dim": -1022, "renders": [[0.5, 0.45, 0.42, 1.0]]},
+          {"id": "Saturn", "name": "Saturn", "center": [-42462, -6780], "size": 14000,
+           "renders": [[0.9, 0.8, 0.55, 1.0]]},
+          {"id": "Titan", "name": "Titan", "center": [-34447, -25737], "size": 5500,
+           "dim": -1018, "renders": [[0.8, 0.6, 0.3, 1.0]]},
+          {"id": "Enceladus", "name": "Enceladus", "center": [-18541, -38797], "size": 4500,
+           "dim": -1017, "renders": [[0.95, 0.97, 1.0, 1.0]]},
+          {"id": "Uranus", "name": "Uranus", "center": [1612, -42970], "size": 11000,
+           "renders": [[0.6, 0.85, 0.85, 1.0]]},
+          {"id": "Miranda", "name": "Miranda", "center": [21397, -37298], "size": 4500,
+           "dim": -1024, "renders": [[0.6, 0.6, 0.62, 1.0]]},
+          {"id": "Neptune", "name": "Neptune", "center": [36279, -23083], "size": 11000,
+           "renders": [[0.25, 0.4, 0.85, 1.0]]},
+          {"id": "Triton", "name": "Triton", "center": [42851, -3579], "size": 5000,
+           "dim": -1021, "renders": [[0.8, 0.7, 0.75, 1.0]]},
+
+          {"id": "Pluto", "name": "Pluto", "center": [43893, 45193], "size": 5000,
+           "dim": -1008, "renders": [[0.7, 0.6, 0.5, 1.0]]},
+          {"id": "Kuiper Belt", "name": "Kuiper Belt", "center": [26840, 56997], "size": 9000,
+           "dim": -1009, "renders": [[0.4, 0.45, 0.55, 1.0]]},
+          {"id": "Haumea", "name": "Haumea", "center": [6879, 62623], "size": 4500,
+           "dim": -1023, "renders": [[0.85, 0.85, 0.88, 1.0]]},
+          {"id": "Diona", "name": "Diona", "center": [-62977, 1684], "size": 6500,
+           "dim": -2542, "renders": [[0.7, 0.85, 0.9, 1.0]]},
+          {"id": "Chalos", "name": "Chalos", "center": [-60112, -18856], "size": 6500,
+           "dim": -2543, "renders": [[0.85, 0.55, 0.3, 1.0]]},
+          {"id": "Nibiru", "name": "Nibiru", "center": [-50732, -37353], "size": 6500,
+           "dim": -2544, "renders": [[0.6, 0.3, 0.5, 1.0]]},
+          {"id": "Fronos", "name": "Fronos", "center": [-35855, -51802], "size": 6500,
+           "dim": -2545, "renders": [[0.5, 0.7, 0.4, 1.0]]},
+          {"id": "Koentus", "name": "Koentus", "center": [-17093, -60637], "size": 4500,
+           "dim": -2642, "renders": [[0.6, 0.6, 0.6, 1.0]]}
+        ]
+      },
+      {
+        "id": "Aurora",
+        "name": "Aurora",
+        "description": "§bSky & light realms.\\nLuminous, floating, magical.",
+        "center": [95000, -95000],
+        "size": 180000,
+        "dim": -102,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.1, 0.13, 0.2],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.1, 0.13, 0.2],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "Aurora Star", "name": "Aurora", "center": [0, 0], "size": 10000,
+           "renders": [[0.7, 0.85, 1.0, 1.0], [0.8, 0.95, 1.0, 0.35], [0.7, 0.85, 1.0, 0.2]]},
+          {"id": "Aether", "name": "Aether", "center": [23000, 0], "size": 11000,
+           "dim": 4, "breathable": true,
+           "renders": [[0.88, 0.92, 0.78, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "The Aurorian", "name": "The Aurorian", "center": [14340, 17982], "size": 11000,
+           "dim": 424, "breathable": true,
+           "renders": [[0.55, 0.62, 0.92, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Twilight Forest", "name": "Twilight Forest", "center": [-5118, 22423], "size": 11000,
+           "dim": 7, "breathable": true,
+           "renders": [[0.4, 0.7, 0.5, 1.0], [0.7, 0.8, 1.0, 0.15]]}
+        ]
+      },
+      {
+        "id": "Verdance",
+        "name": "Verdance",
+        "description": "§aNature & deep realms.\\nSwamp, jungle, fungal green.",
+        "center": [-95000, 95000],
+        "size": 180000,
+        "dim": -103,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.06, 0.12, 0.06],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.06, 0.12, 0.06],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "Verdance Star", "name": "Verdance", "center": [0, 0], "size": 10000,
+           "renders": [[0.55, 0.85, 0.45, 1.0], [0.65, 0.95, 0.5, 0.35], [0.55, 0.85, 0.45, 0.2]]},
+          {"id": "Betweenlands", "name": "Betweenlands", "center": [23000, 0], "size": 11000,
+           "dim": 20, "breathable": true,
+           "renders": [[0.45, 0.5, 0.4, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Erebus", "name": "Erebus", "center": [14340, 17982], "size": 11000,
+           "dim": 66, "breathable": true,
+           "renders": [[0.5, 0.62, 0.3, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Lands of Icaria", "name": "Lands of Icaria", "center": [-5118, 22423], "size": 11000,
+           "dim": -9, "breathable": true,
+           "renders": [[0.55, 0.7, 0.45, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Tropicraft", "name": "Tropicraft", "center": [-20722, 9979], "size": 11000,
+           "dim": -127, "breathable": true,
+           "renders": [[0.3, 0.72, 0.7, 1.0], [0.7, 0.8, 1.0, 0.15]]}
+        ]
+      },
+      {
+        "id": "Umbra",
+        "name": "Umbra",
+        "description": "§5Dark & tomb realms.\\nShadow, sand, and ruin.",
+        "center": [95000, 95000],
+        "size": 180000,
+        "dim": -104,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.1, 0.06, 0.13],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.1, 0.06, 0.13],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "Umbra Star", "name": "Umbra", "center": [0, 0], "size": 10000,
+           "renders": [[0.55, 0.35, 0.65, 1.0], [0.65, 0.45, 0.7, 0.35], [0.55, 0.35, 0.65, 0.2]]},
+          {"id": "The Midnight", "name": "The Midnight", "center": [23000, 0], "size": 11000,
+           "dim": -230, "breathable": true,
+           "renders": [[0.35, 0.25, 0.48, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Atum", "name": "Atum", "center": [14340, 17982], "size": 11000,
+           "dim": 17, "breathable": true,
+           "renders": [[0.8, 0.7, 0.45, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Wyvern Lair", "name": "Wyvern Lair", "center": [-5118, 22423], "size": 9000,
+           "dim": -17, "breathable": true,
+           "renders": [[0.5, 0.4, 0.52, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Ratlantis", "name": "Ratlantis", "center": [-20722, 9979], "size": 9000,
+           "dim": -8, "breathable": true,
+           "renders": [[0.4, 0.6, 0.7, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Anu Lair", "name": "Anu Lair", "center": [-20722, -9979], "size": 6000,
+           "dim": -23, "breathable": true,
+           "renders": [[0.32, 0.22, 0.26, 1.0], [0.7, 0.8, 1.0, 0.15]]},
+          {"id": "Treasure Room", "name": "Treasure Room", "center": [-5118, -22423], "size": 6000,
+           "dim": -24, "breathable": true,
+           "renders": [[0.82, 0.75, 0.42, 1.0], [0.7, 0.8, 1.0, 0.15]]}
+        ]
+      },
+      {
+        "id": "AlphaCentauri",
+        "name": "Alpha Centauri",
+        "description": "The closest star system.\\nHome of Proxima b.",
+        "center": [0, 250000],
+        "size": 60000,
+        "dim": -105,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.02, 0.01, 0.05],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.02, 0.01, 0.05],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "AlphaCentauri Star", "name": "Alpha Centauri", "center": [0, 0], "size": 8000,
+           "renders": [[1.0, 0.55, 0.3, 1.0], [1.0, 0.65, 0.35, 0.35], [1.0, 0.55, 0.3, 0.2]]},
+          {"id": "Proxima b", "name": "Proxima b", "center": [15000, 0], "size": 7000,
+           "dim": -1025, "renders": [[0.7, 0.35, 0.3, 1.0]]}
+        ]
+      },
+      {
+        "id": "BarnardsStar",
+        "name": "Barnard's Star",
+        "description": "A dim red dwarf\\nwith three rocky worlds.",
+        "center": [-250000, 0],
+        "size": 60000,
+        "dim": -106,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.05, 0.01, 0.01],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.05, 0.01, 0.01],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "BarnardsStar Star", "name": "Barnard's Star", "center": [0, 0], "size": 8000,
+           "renders": [[1.0, 0.35, 0.2, 1.0], [1.0, 0.45, 0.25, 0.35], [1.0, 0.35, 0.2, 0.2]]},
+          {"id": "Barnarda C", "name": "Barnarda C", "center": [15000, 0], "size": 7000,
+           "dim": -1030, "renders": [[0.8, 0.5, 0.3, 1.0]]},
+          {"id": "Barnarda C1", "name": "Barnarda C1", "center": [-7500, 12990], "size": 4500,
+           "dim": -1031, "renders": [[0.7, 0.6, 0.45, 1.0]]},
+          {"id": "Barnarda C2", "name": "Barnarda C2", "center": [-7500, -12990], "size": 4500,
+           "dim": -1032, "renders": [[0.65, 0.55, 0.5, 1.0]]}
+        ]
+      },
+      {
+        "id": "TauCeti",
+        "name": "Tau Ceti",
+        "description": "A calm sun-like star.\\nHome of Tau Ceti f.",
+        "center": [250000, 0],
+        "size": 60000,
+        "dim": -107,
+        "breathable": false,
+        "gravity": "legacySpace",
+        "provider": "WarpDriveSpace",
+        "generate": [
+          {"group": "asteroid", "ratio": "0.0040"},
+          {"group": "asteroids_field", "ratio": "0.0010"}
+        ],
+        "skybox": {
+          "backgroundColor": [0.01, 0.03, 0.05],
+          "starBrightnessBase": 0.9,
+          "starBrightnessVanilla": 0.0,
+          "celestialObjectOpacity": 1.0,
+          "fogColor": [0.01, 0.03, 0.05],
+          "fogFactor": [0.0, 0.0, 0.0]
+        },
+        "children": [
+          {"id": "TauCeti Star", "name": "Tau Ceti", "center": [0, 0], "size": 8000,
+           "renders": [[1.0, 0.92, 0.75, 1.0], [1.0, 0.95, 0.8, 0.35], [1.0, 0.92, 0.75, 0.2]]},
+          {"id": "Tau Ceti f", "name": "Tau Ceti f", "center": [15000, 0], "size": 7000,
+           "dim": -1338, "renders": [[0.4, 0.6, 0.6, 1.0]]}
+        ]
+      }
+    ]
+  }
+}
