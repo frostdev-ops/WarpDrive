@@ -52,10 +52,10 @@ public class GlobalRegionManager {
 	public static String GALAXY_UNDEFINED = "???";
 	
 	private static final HashMap<Integer, CopyOnWriteArraySet<GlobalRegion>> registry = new HashMap<>();
-	private static final HashMap<Integer, HashMap<EnumGlobalRegionType, CopyOnWriteArraySet<GlobalRegion>>> registryByType = new HashMap<>();
-	private static final HashMap<Integer, HashMap<Long, CopyOnWriteArraySet<GlobalRegion>>> registryByChunk = new HashMap<>();
-	private static final HashMap<UUID, GlobalRegion> registryByUUID = new HashMap<>();
-	private static final HashMap<String, CopyOnWriteArraySet<GlobalRegion>> registryByName = new HashMap<>();
+	private static final HashMap<Integer, HashMap<EnumGlobalRegionType, CopyOnWriteArraySet<GlobalRegion>>> cache_registryByType = new HashMap<>();
+	private static final HashMap<Integer, HashMap<Long, CopyOnWriteArraySet<GlobalRegion>>> cache_registryByChunk = new HashMap<>();
+	private static final HashMap<UUID, GlobalRegion> cache_registryByUUID = new HashMap<>();
+	private static final HashMap<String, CopyOnWriteArraySet<GlobalRegion>> cache_registryByName = new HashMap<>();
 	private static int countAdd = 0;
 	private static int countRemove = 0;
 	private static int countRead = 0;
@@ -69,6 +69,11 @@ public class GlobalRegionManager {
 		}
 		if (globalRegionProvider.getSignatureUUID() == null) {
 			WarpDrive.logger.error(String.format("Ignoring invalid IGlobalRegionProvider with no UUID %s",
+			                                     globalRegionProvider ));
+			return;
+		}
+		if (globalRegionProvider.getGlobalRegionType() == null) {
+			WarpDrive.logger.error(String.format("Ignoring invalid IGlobalRegionProvider with no region type %s",
 			                                     globalRegionProvider ));
 			return;
 		}
@@ -150,7 +155,7 @@ public class GlobalRegionManager {
 	
 	@Nullable
 	public static GlobalRegion getByName(final EnumGlobalRegionType enumGlobalRegionType, final String name) {
-		final Set<GlobalRegion> setByName = registryByName.get(name == null ? "" : name);
+		final Set<GlobalRegion> setByName = cache_registryByName.get(name == null ? "" : name);
 		if (setByName != null) {
 			for (final GlobalRegion globalRegion : setByName) {
 				if ( enumGlobalRegionType == null
@@ -181,7 +186,7 @@ public class GlobalRegionManager {
 		if (uuid == null) {
 			return null;
 		}
-		final GlobalRegion globalRegionCached = registryByUUID.get(uuid);
+		final GlobalRegion globalRegionCached = cache_registryByUUID.get(uuid);
 		if ( globalRegionCached != null
 		  && ( enumGlobalRegionType == null
 		    || globalRegionCached.type == enumGlobalRegionType ) ) {
@@ -459,27 +464,28 @@ public class GlobalRegionManager {
 		if (enumGlobalRegionType == null) {
 			return registry.get(dimensionId);
 		}
-		final HashMap<EnumGlobalRegionType, CopyOnWriteArraySet<GlobalRegion>> mapByType = registryByType.get(dimensionId);
+		final HashMap<EnumGlobalRegionType, CopyOnWriteArraySet<GlobalRegion>> mapByType = cache_registryByType.get(dimensionId);
 		return mapByType == null ? null : mapByType.get(enumGlobalRegionType);
 	}
 
 	@Nullable
 	private static Set<GlobalRegion> getRegionsByChunk(final int dimensionId, @Nonnull final BlockPos blockPos) {
-		final HashMap<Long, CopyOnWriteArraySet<GlobalRegion>> mapByChunk = registryByChunk.get(dimensionId);
+		final HashMap<Long, CopyOnWriteArraySet<GlobalRegion>> mapByChunk = cache_registryByChunk.get(dimensionId);
 		return mapByChunk == null ? null : mapByChunk.get(ChunkPos.asLong(blockPos.getX() >> 4, blockPos.getZ() >> 4));
 	}
 
 	private static void rebuildIndexes() {
-		registryByType.clear();
-		registryByChunk.clear();
-		registryByUUID.clear();
-		registryByName.clear();
+		cache_registryByType.clear();
+		cache_registryByChunk.clear();
+		cache_registryByUUID.clear();
+		cache_registryByName.clear();
 		for (final Map.Entry<Integer, CopyOnWriteArraySet<GlobalRegion>> entryDimension : registry.entrySet()) {
 			final int dimensionId = entryDimension.getKey();
 			final HashMap<EnumGlobalRegionType, CopyOnWriteArraySet<GlobalRegion>> mapByType = new HashMap<>();
 			final HashMap<Long, CopyOnWriteArraySet<GlobalRegion>> mapByChunk = new HashMap<>();
 			for (final GlobalRegion globalRegion : entryDimension.getValue()) {
-				if (globalRegion == null) {
+				if ( globalRegion == null
+				  || globalRegion.type == null ) {
 					continue;
 				}
 				CopyOnWriteArraySet<GlobalRegion> setByType = mapByType.get(globalRegion.type);
@@ -489,13 +495,13 @@ public class GlobalRegionManager {
 				}
 				setByType.add(globalRegion);
 				if (globalRegion.uuid != null) {
-					registryByUUID.put(globalRegion.uuid, globalRegion);
+					cache_registryByUUID.put(globalRegion.uuid, globalRegion);
 				}
 				final String name = globalRegion.name == null ? "" : globalRegion.name;
-				CopyOnWriteArraySet<GlobalRegion> setByName = registryByName.get(name);
+				CopyOnWriteArraySet<GlobalRegion> setByName = cache_registryByName.get(name);
 				if (setByName == null) {
 					setByName = new CopyOnWriteArraySet<>();
-					registryByName.put(name, setByName);
+					cache_registryByName.put(name, setByName);
 				}
 				setByName.add(globalRegion);
 				for (int xChunk = globalRegion.minX >> 4; xChunk <= globalRegion.maxX >> 4; xChunk++) {
@@ -510,8 +516,8 @@ public class GlobalRegionManager {
 					}
 				}
 			}
-			registryByType.put(dimensionId, mapByType);
-			registryByChunk.put(dimensionId, mapByChunk);
+			cache_registryByType.put(dimensionId, mapByType);
+			cache_registryByChunk.put(dimensionId, mapByChunk);
 		}
 	}
 	
