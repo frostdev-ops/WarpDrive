@@ -1,6 +1,6 @@
 # Ship Navigation
 
-The ship navigation interface is opened from a ship core or linked ship controller. It provides a starmap, destination browser, ship status, dimension editor, movement preview, and drive controls in one screen.
+The ship navigation interface is opened from a ship core or linked ship controller. It provides a starmap, destination and waypoint browsers, ship status, dimension editor, movement preview, and drive controls in one screen.
 
 ## Map
 
@@ -24,6 +24,18 @@ The Destinations tab lists reachable objects and includes:
 
 Routes can include takeoff, orbital approach, landing, hyperspace entry, hyperspace cruise, and hyperspace exit. The displayed range is calculated from the same movement preview used by the drive.
 
+## Surface Waypoints
+
+The Waypoints tab imports enabled waypoints from VoxelMap, Xaero's Minimap, and JourneyMap when those client mods are installed. These integrations are optional and use reflection, so WarpDrive does not require any map addon on the client or server.
+
+- Only waypoints in the ship's current planetary dimension and celestial region can be plotted.
+- The waypoint X/Z coordinates identify the center of the landing footprint. The map addon's Y coordinate is not trusted as a safe ship altitude.
+- The server finds the highest non-air block under the ship's full configured footprint and places the bottom of the ship box one block above it.
+- The entire landing box must be air, fit below build height, and remain inside the celestial border.
+- The landing footprint must be in previously generated terrain. Visit unexplored waypoint areas before plotting a ship route.
+- Large routes are split into ordinary planet-movement legs and use the selected autopilot mode.
+- Landing clearance is checked again immediately before the final leg deploys blocks.
+
 ## Autopilot Modes
 
 - Off: no route chaining.
@@ -46,4 +58,5 @@ The drive clamps movement to the calculated maximum distance for the current shi
 - If the route stops in assisted mode, press Engage to confirm the next leg.
 - If the route stops in safety-stops mode, check whether the next leg requires confirmation.
 - If full auto stops unexpectedly, check the drive status and blocker text for energy, cooldown, stale scan, invalid route, or movement failure.
+- If a surface waypoint cannot be plotted, confirm its full ship footprint is generated, inside the current celestial region, and has enough vertical clearance above its highest block.
 - If map and destination coordinates do not match expectations, confirm the celestial object parent coordinates in the active celestial object configuration.

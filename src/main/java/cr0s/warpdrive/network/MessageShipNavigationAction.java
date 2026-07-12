@@ -35,6 +35,7 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 	public static final byte ACTION_PAUSE = 8;
 	public static final byte ACTION_RESUME = 9;
 	public static final byte ACTION_STEP = 10;
+	public static final byte ACTION_PLAN_WAYPOINT = 11;
 	
 	private byte action;
 	private int dimensionId;
@@ -118,7 +119,7 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 	@SuppressWarnings("PMD.NPathComplexity")
 	private static void handle(final MessageShipNavigationAction message, final EntityPlayerMP entityPlayerMP) {
 		if ( message.action < ACTION_REFRESH
-		  || message.action > ACTION_STEP ) {
+		  || message.action > ACTION_PLAN_WAYPOINT ) {
 			WarpDrive.logger.warn(String.format("Ignoring unknown ship navigation action %d from %s",
 			                                    message.action, entityPlayerMP));
 			return;
@@ -175,6 +176,11 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		case ACTION_PLAN:
 			notice = ShipNavigationHelper.setDestination(entityPlayerMP, shipCore, message.targetId)
 			       ? "warpdrive.navigation.notice.destination_plotted" : "warpdrive.navigation.notice.unable_to_plot";
+			break;
+
+		case ACTION_PLAN_WAYPOINT:
+			notice = ShipNavigationHelper.setWaypoint(entityPlayerMP, shipCore, message.payload)
+			       ? "warpdrive.navigation.notice.waypoint_plotted" : "warpdrive.navigation.notice.unable_to_plot_waypoint";
 			break;
 
 		case ACTION_ENGAGE:
@@ -264,6 +270,9 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		case ACTION_PLAN:
 			intervalMs = 300L;
 			break;
+		case ACTION_PLAN_WAYPOINT:
+			intervalMs = 5000L;
+			break;
 		case ACTION_REFRESH:
 			intervalMs = 250L;
 			break;
@@ -291,7 +300,8 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		if (intervalMs <= 0L) {
 			return false;
 		}
-		final String key = entityPlayerMP.getUniqueID() + ":" + message.action + ":" + message.dimensionId + ":"
+		final String actor = message.action == ACTION_PLAN_WAYPOINT ? "core" : entityPlayerMP.getUniqueID().toString();
+		final String key = actor + ":" + message.action + ":" + message.dimensionId + ":"
 		                 + blockPosCore.getX() + ":" + blockPosCore.getY() + ":" + blockPosCore.getZ() + ":" + message.targetId;
 		final long now = System.currentTimeMillis();
 		final Long last = ACTION_THROTTLE_MS.put(key, now);

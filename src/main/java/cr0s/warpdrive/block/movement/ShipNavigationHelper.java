@@ -22,12 +22,17 @@ import net.minecraft.nbt.NBTTagCompound;
 import net.minecraft.nbt.NBTTagList;
 import net.minecraft.util.EnumFacing;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.AxisAlignedBB;
+import net.minecraft.world.chunk.Chunk;
 
 public final class ShipNavigationHelper {
 
 	private static final int ORBIT_Y = 128;
 	private static final int TAKEOFF_MARGIN_BLOCKS = 16;
 	private static final int LANDING_MARGIN_BLOCKS = 16;
+	private static final int WAYPOINT_MAX_CHUNKS = 64;
+	private static final long WAYPOINT_MAX_BLOCK_CHECKS = 500_000L;
+	private static final int WAYPOINT_LABEL_MAX_LENGTH = 64;
 	private static final int MAP_VERSION = 2;
 
 	private ShipNavigationHelper() {
@@ -88,6 +93,14 @@ public final class ShipNavigationHelper {
 		tagCompound.setBoolean("inSpace", boolFromObjectArray(shipCore.isInSpace()));
 		tagCompound.setBoolean("inHyperspace", boolFromObjectArray(shipCore.isInHyperspace()));
 		tagCompound.setString("navigationTargetId", shipCore.getNavigationTargetId());
+		tagCompound.setBoolean("navigationTargetIsWaypoint", shipCore.isNavigationTargetWaypoint());
+		if (shipCore.isNavigationTargetWaypoint()) {
+			tagCompound.setString("navigationWaypointName", shipCore.getNavigationWaypointName());
+			tagCompound.setString("navigationWaypointSource", shipCore.getNavigationWaypointSource());
+			tagCompound.setInteger("navigationWaypointX", shipCore.getNavigationWaypointX());
+			tagCompound.setInteger("navigationWaypointY", shipCore.getNavigationWaypointY());
+			tagCompound.setInteger("navigationWaypointZ", shipCore.getNavigationWaypointZ());
+		}
 		tagCompound.setInteger("mapVersion", getMapVersion());
 		tagCompound.setLong("serverTimeMs", shipCore.getWorld().getTotalWorldTime() * 50L);
 		if (notice != null && !notice.isEmpty()) {
@@ -417,6 +430,16 @@ public final class ShipNavigationHelper {
 	                                         @Nullable final CelestialObject celestialObjectTarget) {
 		final NBTTagCompound tagCompound = new NBTTagCompound();
 		final NBTTagList tagListLegs = new NBTTagList();
+		if (shipCore.isNavigationTargetWaypoint()) {
+			if (isAtNavigationDestination(shipCore, celestialObjectCurrent, null)) {
+				return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.already_at_destination", "");
+			}
+			final Leg nextLeg = createAtmosphericLeg(shipCore);
+			if (nextLeg == null) {
+				return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.no_route", "warpdrive.navigation.route.waypoint_unavailable");
+			}
+			return readyRoute(shipCore, tagCompound, tagListLegs, nextLeg);
+		}
 		if (celestialObjectTarget == null) {
 			return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.select_destination", "");
 		}
@@ -435,6 +458,17 @@ public final class ShipNavigationHelper {
 			return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.no_route", "warpdrive.navigation.route.no_shared_hierarchy");
 		}
 
+		readyRoute(shipCore, tagCompound, tagListLegs, nextLeg);
+		appendPreviewLegs(shipCore, tagListLegs, celestialObjectCurrent, celestialObjectTarget, nextLeg);
+		tagCompound.setTag("legs", tagListLegs);
+		return tagCompound;
+	}
+
+	@Nonnull
+	private static NBTTagCompound readyRoute(@Nonnull final TileEntityShipCore shipCore,
+	                                        @Nonnull final NBTTagCompound tagCompound,
+	                                        @Nonnull final NBTTagList tagListLegs,
+	                                        @Nonnull final Leg nextLeg) {
 		final ShipMovementPreview preview = nextLeg.preview == null
 		                                  ? shipCore.previewMovement(nextLeg.command, nextLeg.moveFront, nextLeg.moveUp, nextLeg.moveRight, (byte) 0)
 		                                  : nextLeg.preview;
@@ -447,7 +481,6 @@ public final class ShipNavigationHelper {
 		tagCompound.setString("blockerMessage", preview.canEngage ? "" : preview.blockerMessage);
 		tagCompound.setTag("validation", preview.writeToNBT());
 		tagListLegs.appendTag(writeLeg(nextLeg, preview));
-		appendPreviewLegs(shipCore, tagListLegs, celestialObjectCurrent, celestialObjectTarget, nextLeg);
 		tagCompound.setTag("legs", tagListLegs);
 		return tagCompound;
 	}
@@ -734,6 +767,143 @@ public final class ShipNavigationHelper {
 		return true;
 	}
 
+	public static boolean setWaypoint(@Nonnull final EntityPlayerMP entityPlayerMP,
+	                                  @Nonnull final TileEntityShipCore shipCore,
+	                                  @Nonnull final NBTTagCompound payload) {
+		if (!shipCore.isCrewMember(entityPlayerMP)) {
+			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.denied"));
+			return false;
+		}
+		final int dimension = payload.getInteger("dimension");
+		if (dimension != shipCore.getWorld().provider.getDimension()) {
+			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.wrong_dimension"));
+			return false;
+		}
+		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
+		final int waypointX = payload.getInteger("x");
+		final int waypointZ = payload.getInteger("z");
+		final CelestialObject celestialObjectTarget = CelestialObjectManager.get(shipCore.getWorld(), waypointX, waypointZ);
+		if ( celestialObjectCurrent == null
+		  || celestialObjectCurrent.isSpace()
+		  || celestialObjectCurrent.isHyperspace()
+		  || celestialObjectTarget == null
+		  || !celestialObjectCurrent.id.equals(celestialObjectTarget.id) ) {
+			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.outside_region"));
+			return false;
+		}
+		if (!areWaypointChunksGenerated(shipCore, waypointX, waypointZ)) {
+			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.unexplored"));
+			return false;
+		}
+		final Integer landingCoreY = findWaypointLandingY(shipCore, waypointX, waypointZ, celestialObjectCurrent);
+		if (landingCoreY == null) {
+			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.no_landing_space"));
+			return false;
+		}
+		shipCore.cancelAutopilot();
+		shipCore.setNavigationWaypoint(sanitizeWaypointLabel(payload.getString("name")),
+		                               sanitizeWaypointLabel(payload.getString("source")),
+		                               dimension, waypointX, landingCoreY, waypointZ);
+		return true;
+	}
+
+	private static String sanitizeWaypointLabel(@Nonnull final String value) {
+		final String sanitized = value.replace('\n', ' ').replace('\r', ' ');
+		return sanitized.substring(0, Math.min(WAYPOINT_LABEL_MAX_LENGTH, sanitized.length()));
+	}
+
+	private static boolean areWaypointChunksGenerated(@Nonnull final TileEntityShipCore shipCore,
+	                                                  final int targetCoreX, final int targetCoreZ) {
+		final int minChunkX = targetCoreX + shipCore.minX - shipCore.getPos().getX() >> 4;
+		final int maxChunkX = targetCoreX + shipCore.maxX - shipCore.getPos().getX() >> 4;
+		final int minChunkZ = targetCoreZ + shipCore.minZ - shipCore.getPos().getZ() >> 4;
+		final int maxChunkZ = targetCoreZ + shipCore.maxZ - shipCore.getPos().getZ() >> 4;
+		if ((long) (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1) > WAYPOINT_MAX_CHUNKS) {
+			return false;
+		}
+		for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+			for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+				if (!shipCore.getWorld().isChunkGeneratedAt(chunkX, chunkZ)) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	public static boolean isWaypointLandingValid(@Nonnull final TileEntityShipCore shipCore,
+	                                             final int targetCoreX, final int targetCoreY, final int targetCoreZ) {
+		final CelestialObject celestialObject = CelestialObjectManager.get(shipCore.getWorld(), targetCoreX, targetCoreZ);
+		if ( celestialObject == null
+		  || celestialObject.isSpace()
+		  || celestialObject.isHyperspace() ) {
+			return false;
+		}
+		final Integer landingCoreY = findWaypointLandingY(shipCore,
+		                                                    targetCoreX, targetCoreZ,
+		                                                    celestialObject);
+		return landingCoreY != null && landingCoreY == targetCoreY;
+	}
+
+	@Nullable
+	private static Integer findWaypointLandingY(@Nonnull final TileEntityShipCore shipCore,
+	                                            final int targetCoreX, final int targetCoreZ,
+	                                            @Nonnull final CelestialObject celestialObject) {
+		final int offsetMinX = shipCore.minX - shipCore.getPos().getX();
+		final int offsetMinY = shipCore.minY - shipCore.getPos().getY();
+		final int offsetMinZ = shipCore.minZ - shipCore.getPos().getZ();
+		final int offsetMaxX = shipCore.maxX - shipCore.getPos().getX();
+		final int offsetMaxY = shipCore.maxY - shipCore.getPos().getY();
+		final int offsetMaxZ = shipCore.maxZ - shipCore.getPos().getZ();
+		final int minimumCoreY = 9 - offsetMinY;
+		final int maximumCoreY = 255 - offsetMaxY;
+		if (minimumCoreY > maximumCoreY) {
+			return null;
+		}
+		final BlockPos.MutableBlockPos mutableBlockPos = new BlockPos.MutableBlockPos();
+		int highestSupportY = Integer.MIN_VALUE;
+		long blockChecks = 0L;
+		for (int x = targetCoreX + offsetMinX; x <= targetCoreX + offsetMaxX; x++) {
+			for (int z = targetCoreZ + offsetMinZ; z <= targetCoreZ + offsetMaxZ; z++) {
+				final Chunk chunk = shipCore.getWorld().getChunk(x >> 4, z >> 4);
+				for (int y = Math.min(255, chunk.getTopFilledSegment() + 15); y >= 0; y--) {
+					blockChecks++;
+					if (blockChecks > WAYPOINT_MAX_BLOCK_CHECKS) {
+						return null;
+					}
+					if (isSourceShipPosition(shipCore, x, y, z)) {
+						continue;
+					}
+					mutableBlockPos.setPos(x, y, z);
+					if (!shipCore.getWorld().isAirBlock(mutableBlockPos)) {
+						highestSupportY = Math.max(highestSupportY, y);
+						break;
+					}
+				}
+			}
+		}
+		if (highestSupportY == Integer.MIN_VALUE) {
+			return null;
+		}
+		final int candidateCoreY = Math.max(minimumCoreY, highestSupportY + 1 - offsetMinY);
+		final int targetMinY = candidateCoreY + offsetMinY;
+		final int targetMaxY = candidateCoreY + offsetMaxY;
+		if (candidateCoreY > maximumCoreY || targetMinY != highestSupportY + 1) {
+			return null;
+		}
+		final AxisAlignedBB targetBounds = new AxisAlignedBB(
+				targetCoreX + offsetMinX, targetMinY, targetCoreZ + offsetMinZ,
+				targetCoreX + offsetMaxX + 1, targetMaxY + 1, targetCoreZ + offsetMaxZ + 1);
+		return celestialObject.isInsideBorder(targetBounds) ? candidateCoreY : null;
+	}
+
+	private static boolean isSourceShipPosition(@Nonnull final TileEntityShipCore shipCore,
+	                                            final int x, final int y, final int z) {
+		return x >= shipCore.minX && x <= shipCore.maxX
+		    && y >= shipCore.minY && y <= shipCore.maxY
+		    && z >= shipCore.minZ && z <= shipCore.maxZ;
+	}
+
 	public static boolean cancel(@Nonnull final EntityPlayerMP entityPlayerMP,
 	                             @Nonnull final TileEntityShipCore shipCore) {
 		if (!shipCore.isCrewMember(entityPlayerMP)) {
@@ -759,7 +929,7 @@ public final class ShipNavigationHelper {
 
 		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
 		final CelestialObject celestialObjectTarget = getTarget(shipCore);
-		if (celestialObjectCurrent == null || celestialObjectTarget == null) {
+		if (celestialObjectCurrent == null || celestialObjectTarget == null && !shipCore.isNavigationTargetWaypoint()) {
 			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.no_route"));
 			return false;
 		}
@@ -770,7 +940,9 @@ public final class ShipNavigationHelper {
 			return true;
 		}
 
-		final Leg leg = computeNextLeg(shipCore, celestialObjectCurrent, celestialObjectTarget);
+		final Leg leg = shipCore.isNavigationTargetWaypoint()
+		              ? createAtmosphericLeg(shipCore)
+		              : computeNextLeg(shipCore, celestialObjectCurrent, celestialObjectTarget);
 		if (leg == null) {
 			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.no_route"));
 			return false;
@@ -788,10 +960,10 @@ public final class ShipNavigationHelper {
 		}
 
 		// the click explicitly confirms this leg; the autopilot pump chains subsequent legs per the ship's mode
-		commitLeg(shipCore, celestialObjectTarget.id, leg);
+		commitLeg(shipCore, shipCore.getNavigationTargetId(), leg);
 		shipCore.startAutopilotRun(false);
 		Commons.messageToAllPlayersInArea(shipCore, new WarpDriveText(Commons.getStyleCorrect(), "warpdrive.navigation.engaging",
-		                                                               new WarpDriveText(null, leg.type.getTitleKey()), celestialObjectTarget.getDisplayName()));
+		                                                               new WarpDriveText(null, leg.type.getTitleKey()), getTargetDisplayName(shipCore, celestialObjectTarget)));
 		return true;
 	}
 
@@ -851,6 +1023,9 @@ public final class ShipNavigationHelper {
 
 	@Nullable
 	private static CelestialObject getTarget(@Nonnull final TileEntityShipCore shipCore) {
+		if (shipCore.isNavigationTargetWaypoint()) {
+			return null;
+		}
 		final String navigationTargetId = shipCore.getNavigationTargetId();
 		if (navigationTargetId == null || navigationTargetId.isEmpty()) {
 			return null;
@@ -861,6 +1036,9 @@ public final class ShipNavigationHelper {
 	/** Resolve current/target from live ship state and compute the next leg (used by the autopilot pump). */
 	@Nullable
 	public static Leg computeNextLeg(@Nonnull final TileEntityShipCore shipCore) {
+		if (shipCore.isNavigationTargetWaypoint()) {
+			return isAtNavigationDestination(shipCore, null, null) ? null : createAtmosphericLeg(shipCore);
+		}
 		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
 		final CelestialObject celestialObjectTarget = getTarget(shipCore);
 		if ( celestialObjectCurrent == null
@@ -936,6 +1114,12 @@ public final class ShipNavigationHelper {
 	public static boolean isAtNavigationDestination(@Nonnull final TileEntityShipCore shipCore,
 	                                                @Nullable final CelestialObject celestialObjectCurrent,
 	                                                @Nullable final CelestialObject celestialObjectTarget) {
+		if (shipCore.isNavigationTargetWaypoint()) {
+			return shipCore.getWorld().provider.getDimension() == shipCore.getNavigationWaypointDimension()
+			    && shipCore.getPos().getX() == shipCore.getNavigationWaypointX()
+			    && shipCore.getPos().getY() == shipCore.getNavigationWaypointY()
+			    && shipCore.getPos().getZ() == shipCore.getNavigationWaypointZ();
+		}
 		if ( celestialObjectCurrent == null
 		  || celestialObjectTarget == null
 		  || celestialObjectTarget.isVirtual() ) {
@@ -1013,6 +1197,130 @@ public final class ShipNavigationHelper {
 			warningKey = "";
 		}
 		return new Leg(type, step.x, step.y, step.z, warningKey, stepDistance, remainingDistance, stepPreview);
+	}
+
+	@Nullable
+	private static Leg createAtmosphericLeg(@Nonnull final TileEntityShipCore shipCore) {
+		if ( !shipCore.isNavigationTargetWaypoint()
+		  || shipCore.getWorld().provider.getDimension() != shipCore.getNavigationWaypointDimension()
+		  || CelestialObjectManager.isInSpace(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ())
+		  || CelestialObjectManager.isInHyperspace(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ()) ) {
+			return null;
+		}
+		final int moveX = shipCore.getNavigationWaypointX() - shipCore.getPos().getX();
+		final int moveY = shipCore.getNavigationWaypointY() - shipCore.getPos().getY();
+		final int moveZ = shipCore.getNavigationWaypointZ() - shipCore.getPos().getZ();
+		final VectorI movement = toLocalMovement(shipCore, moveX, moveY, moveZ);
+		if (movement.getMagnitudeSquared() <= 0L) {
+			return null;
+		}
+		if (isOverlappingMovement(shipCore, moveX, moveY, moveZ)) {
+			return createAtmosphericDetourLeg(shipCore, movement);
+		}
+		final int remainingDistance = (int) Math.ceil(Math.sqrt(movement.getMagnitudeSquared()));
+		final ShipMovementPreview routePreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+		                                                                    movement.x, movement.y, movement.z, (byte) 0);
+		final VectorI step = routePreview.effectiveMovement;
+		if (step.getMagnitudeSquared() <= 0L) {
+			return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+			               0, 0, 0, "", 0, remainingDistance, routePreview);
+		}
+		final EnumFacing facing = getFacing(shipCore);
+		final int stepX = facing.getXOffset() * step.x - facing.getZOffset() * step.z;
+		final int stepZ = facing.getZOffset() * step.x + facing.getXOffset() * step.z;
+		if (isOverlappingMovement(shipCore, stepX, step.y, stepZ)) {
+			return createAtmosphericDetourLeg(shipCore, movement);
+		}
+		final int stepDistance = (int) Math.ceil(Math.sqrt(step.getMagnitudeSquared()));
+		final String warningKey = routePreview.wouldBeClamped || stepDistance < remainingDistance
+		                        ? "warpdrive.navigation.route.cruise_split" : "";
+		final ShipMovementPreview stepPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+		                                                                   step.x, step.y, step.z, (byte) 0);
+		final EnumShipNavigationLegType legType = !routePreview.wouldBeClamped
+		                                          && step.x == movement.x && step.y == movement.y && step.z == movement.z
+		                                        ? EnumShipNavigationLegType.ATMOSPHERIC_LANDING
+		                                        : EnumShipNavigationLegType.ATMOSPHERIC_CRUISE;
+		return new Leg(legType,
+		               step.x, step.y, step.z, warningKey, stepDistance, remainingDistance, stepPreview);
+	}
+
+	@Nullable
+	private static Leg createAtmosphericDetourLeg(@Nonnull final TileEntityShipCore shipCore,
+	                                              @Nonnull final VectorI remaining) {
+		final int width = shipCore.maxX - shipCore.minX + 1;
+		final int depth = shipCore.maxZ - shipCore.minZ + 1;
+		final int height = shipCore.maxY - shipCore.minY + 1;
+		final int targetDeltaX = shipCore.getNavigationWaypointX() - shipCore.getPos().getX();
+		final int targetDeltaY = shipCore.getNavigationWaypointY() - shipCore.getPos().getY();
+		final int targetDeltaZ = shipCore.getNavigationWaypointZ() - shipCore.getPos().getZ();
+		final long distanceSquaredBefore = (long) targetDeltaX * targetDeltaX
+		                                 + (long) targetDeltaY * targetDeltaY
+		                                 + (long) targetDeltaZ * targetDeltaZ;
+		final int[][] candidates = {
+			{ targetDeltaX >= 0 ? -width : width, 0, 0 },
+			{ targetDeltaX >= 0 ? width : -width, 0, 0 },
+			{ 0, 0, targetDeltaZ >= 0 ? -depth : depth },
+			{ 0, 0, targetDeltaZ >= 0 ? depth : -depth },
+			{ 0, targetDeltaY >= 0 ? -height : height, 0 },
+			{ 0, targetDeltaY >= 0 ? height : -height, 0 }
+		};
+		final CelestialObject celestialObject = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
+		for (final int[] candidate : candidates) {
+			final VectorI localCandidate = toLocalMovement(shipCore, candidate[0], candidate[1], candidate[2]);
+			final ShipMovementPreview preview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+			                                                               localCandidate.x, localCandidate.y, localCandidate.z, (byte) 0);
+			final VectorI effective = preview.effectiveMovement;
+			final EnumFacing facing = getFacing(shipCore);
+			final int effectiveX = facing.getXOffset() * effective.x - facing.getZOffset() * effective.z;
+			final int effectiveZ = facing.getZOffset() * effective.x + facing.getXOffset() * effective.z;
+			final long distanceSquaredAfter = (long) (targetDeltaX - effectiveX) * (targetDeltaX - effectiveX)
+			                                + (long) (targetDeltaY - effective.y) * (targetDeltaY - effective.y)
+			                                + (long) (targetDeltaZ - effectiveZ) * (targetDeltaZ - effectiveZ);
+			if ( effective.getMagnitudeSquared() <= 0L
+			  || isOverlappingMovement(shipCore, effectiveX, effective.y, effectiveZ)
+			  || distanceSquaredAfter <= distanceSquaredBefore
+			  || !isMovementInsideBorder(shipCore, celestialObject, effectiveX, effective.y, effectiveZ) ) {
+				continue;
+			}
+			final int stepDistance = (int) Math.ceil(Math.sqrt(effective.getMagnitudeSquared()));
+			final int remainingDistance = (int) Math.ceil(Math.sqrt(remaining.getMagnitudeSquared()));
+			return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+			               effective.x, effective.y, effective.z,
+			               "warpdrive.navigation.route.waypoint_detour", stepDistance, remainingDistance, preview);
+		}
+		return null;
+	}
+
+	private static boolean isOverlappingMovement(@Nonnull final TileEntityShipCore shipCore,
+	                                             final int moveX, final int moveY, final int moveZ) {
+		return Math.abs(moveX) < shipCore.maxX - shipCore.minX + 1
+		    && Math.abs(moveY) < shipCore.maxY - shipCore.minY + 1
+		    && Math.abs(moveZ) < shipCore.maxZ - shipCore.minZ + 1;
+	}
+
+	private static boolean isMovementInsideBorder(@Nonnull final TileEntityShipCore shipCore,
+	                                              @Nullable final CelestialObject celestialObject,
+	                                              final int moveX, final int moveY, final int moveZ) {
+		if (celestialObject == null) {
+			return false;
+		}
+		if (shipCore.minY + moveY < 9 || shipCore.maxY + moveY > 255) {
+			return false;
+		}
+		return celestialObject.isInsideBorder(new AxisAlignedBB(
+				shipCore.minX + moveX, shipCore.minY + moveY, shipCore.minZ + moveZ,
+				shipCore.maxX + moveX + 1, shipCore.maxY + moveY + 1, shipCore.maxZ + moveZ + 1));
+	}
+
+	@Nonnull
+	private static String getTargetDisplayName(@Nonnull final TileEntityShipCore shipCore,
+	                                           @Nullable final CelestialObject celestialObjectTarget) {
+		if (shipCore.isNavigationTargetWaypoint()) {
+			return shipCore.getNavigationWaypointName().isEmpty()
+			     ? String.format("%d, %d", shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ())
+			     : shipCore.getNavigationWaypointName();
+		}
+		return celestialObjectTarget == null ? "?" : celestialObjectTarget.getDisplayName();
 	}
 
 	@Nonnull

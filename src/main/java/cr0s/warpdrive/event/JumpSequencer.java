@@ -12,6 +12,7 @@ import cr0s.warpdrive.api.ITransformation;
 import cr0s.warpdrive.api.WarpDriveText;
 import cr0s.warpdrive.api.computer.IShipController;
 import cr0s.warpdrive.block.movement.TileEntityShipCore;
+import cr0s.warpdrive.block.movement.ShipNavigationHelper;
 import cr0s.warpdrive.data.CelestialObjectManager;
 import cr0s.warpdrive.config.Dictionary;
 import cr0s.warpdrive.config.WarpDriveConfig;
@@ -75,6 +76,10 @@ public class JumpSequencer extends AbstractSequencer {
 	private final byte rotationSteps;
 	private final String nameTarget;
 	private final String navigationEngagedTargetId;
+	private final boolean navigationEngagedWaypoint;
+	private final int navigationWaypointX;
+	private final int navigationWaypointY;
+	private final int navigationWaypointZ;
 	protected final int destX;
 	protected final int destY;
 	protected final int destZ;
@@ -149,6 +154,11 @@ public class JumpSequencer extends AbstractSequencer {
 		this.rotationSteps = rotationSteps;
 		this.nameTarget = nameTarget;
 		this.navigationEngagedTargetId = navigationEngagedTargetId == null ? "" : navigationEngagedTargetId;
+		final int[] waypoint = parseWaypointTarget(this.navigationEngagedTargetId);
+		this.navigationEngagedWaypoint = waypoint != null && waypoint[0] == worldSource.provider.getDimension();
+		this.navigationWaypointX = waypoint == null ? 0 : waypoint[1];
+		this.navigationWaypointY = waypoint == null ? 0 : waypoint[2];
+		this.navigationWaypointZ = waypoint == null ? 0 : waypoint[3];
 		this.destX = destX;
 		this.destY = destY;
 		this.destZ = destZ;
@@ -173,6 +183,10 @@ public class JumpSequencer extends AbstractSequencer {
 		this.rotationSteps = rotationSteps;
 		this.nameTarget = null;
 		this.navigationEngagedTargetId = "";
+		this.navigationEngagedWaypoint = false;
+		this.navigationWaypointX = 0;
+		this.navigationWaypointY = 0;
+		this.navigationWaypointZ = 0;
 		this.destX = destX;
 		this.destY = destY;
 		this.destZ = destZ;
@@ -187,6 +201,22 @@ public class JumpSequencer extends AbstractSequencer {
 	
 	public void setBlocksPerTick(final int blocksPerTick) {
 		this.blocksPerTick = Math.min(WarpDriveConfig.G_BLOCKS_PER_TICK, blocksPerTick);
+	}
+
+	private static int[] parseWaypointTarget(final String targetId) {
+		if (targetId == null || !targetId.startsWith("waypoint:")) {
+			return null;
+		}
+		final String[] values = targetId.split(":", -1);
+		if (values.length != 5) {
+			return null;
+		}
+		try {
+			return new int[] { Integer.parseInt(values[1]), Integer.parseInt(values[2]),
+			                   Integer.parseInt(values[3]), Integer.parseInt(values[4]) };
+		} catch (final NumberFormatException exception) {
+			return null;
+		}
 	}
 	
 	public void setEffectSource(final Vector3 v3Source) {
@@ -249,7 +279,11 @@ public class JumpSequencer extends AbstractSequencer {
 			final TileEntity tileEntity = worldTarget.getTileEntity(blockPosCoreTarget);
 			final IShipController shipController = tileEntity instanceof TileEntityShipCore ? ((TileEntityShipCore) tileEntity) : null;
 			if (shipController instanceof TileEntityShipCore) {
-				((TileEntityShipCore) shipController).onNavigationMovementCompleted(navigationEngagedTargetId);
+				final TileEntityShipCore shipCoreTarget = (TileEntityShipCore) shipController;
+				if (ship.shipCore != null && ship.shipCore != shipCoreTarget) {
+					shipCoreTarget.copyNavigationControlStateFrom(ship.shipCore);
+				}
+				shipCoreTarget.onNavigationMovementCompleted(navigationEngagedTargetId);
 			}
 			jumpResult = new JumpResult(worldTarget, blockPosCoreTarget,
 			                            shipController, shipMovementType.getName(), true, reason);
@@ -804,7 +838,11 @@ public class JumpSequencer extends AbstractSequencer {
 			break;
 		}
 		transformation = new Transformation(ship, worldTarget, moveX, moveY, moveZ, rotationSteps);
-		isFinalTargetCheckDone = isPluginCheckDone || betweenWorlds;
+		// Long jumps skip swept-path checks, but their final placement still needs collision,
+		// anchor, event and protection validation before any blocks are deployed.
+		isFinalTargetCheckDone = betweenWorlds
+		                      || shipMovementType == EnumShipMovementType.INSTANTIATE
+		                      || shipMovementType == EnumShipMovementType.RESTORE;
 		
 		LocalProfiler.stop();
 	}
@@ -880,6 +918,19 @@ public class JumpSequencer extends AbstractSequencer {
 		if (chunkLoadingResult == ChunkLoadingResult.IN_PROGRESS) {
 			LocalProfiler.stop();
 			return false;
+		}
+		if (ship.shipCore != null && navigationEngagedWaypoint) {
+			final BlockPos blockPosCoreAtTarget = transformation.apply(ship.core);
+			if ( blockPosCoreAtTarget.getX() == navigationWaypointX
+			  && blockPosCoreAtTarget.getY() == navigationWaypointY
+			  && blockPosCoreAtTarget.getZ() == navigationWaypointZ
+			  && !ShipNavigationHelper.isWaypointLandingValid(ship.shipCore,
+			                                                    navigationWaypointX, navigationWaypointY, navigationWaypointZ) ) {
+				disableAndMessage(false, new WarpDriveText(Commons.getStyleWarning(),
+				                                                   "warpdrive.navigation.waypoint.no_landing_space"));
+				LocalProfiler.stop();
+				return false;
+			}
 		}
 
 		if (!isPluginCheckDone && !betweenWorlds) {

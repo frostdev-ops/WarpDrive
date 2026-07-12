@@ -104,8 +104,19 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 	
 	private EnumShipMovementType shipMovementType;
 	private ShipMovementCosts shipMovementCosts;
+	private static long navigationControlSequence = 0L;
 	private String navigationTargetId = "";
 	private String navigationEngagedTargetId = "";
+	private boolean navigationEngagedCancelled = false;
+	private boolean navigationEngagedPaused = false;
+	private boolean navigationTargetIsWaypoint = false;
+	private String navigationWaypointName = "";
+	private String navigationWaypointSource = "";
+	private int navigationWaypointDimension = 0;
+	private int navigationWaypointX = 0;
+	private int navigationWaypointY = 0;
+	private int navigationWaypointZ = 0;
+	private long navigationControlRevision = 0L;
 	private String navigationHeavyCacheKey = "";
 	private NBTTagCompound navigationHeavyCache = null;
 
@@ -116,6 +127,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 	// autopilot
 	private static final int AUTOPILOT_MAX_RETRIES = 3;
 	private static final int AUTOPILOT_MAX_LEGS = 64;
+	private static final int AUTOPILOT_MAX_WAYPOINT_LEGS = 4096;
 	private static final int AUTOPILOT_BACKOFF_TICKS = 40;
 	private static final int AUTOPILOT_ENERGY_RECHECK_TICKS = 20;
 	private EnumShipAutopilotMode autopilotMode = EnumShipAutopilotMode.SAFETY_STOPS;
@@ -652,13 +664,63 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		final String navigationTargetIdNew = navigationTargetId == null ? "" : navigationTargetId;
 		if (!this.navigationTargetId.equals(navigationTargetIdNew)) {
 			this.navigationTargetId = navigationTargetIdNew;
+			navigationTargetIsWaypoint = false;
+			navigationWaypointName = "";
+			navigationWaypointSource = "";
 			invalidateNavigationCache();
-			markDirty();
+			markNavigationControlChanged();
 		}
 	}
 
+	public void setNavigationWaypoint(final String name, final String source, final int dimension,
+	                                  final int x, final int y, final int z) {
+		navigationTargetIsWaypoint = true;
+		navigationWaypointName = name == null ? "" : name;
+		navigationWaypointSource = source == null ? "" : source;
+		navigationWaypointDimension = dimension;
+		navigationWaypointX = x;
+		navigationWaypointY = y;
+		navigationWaypointZ = z;
+		navigationTargetId = String.format("waypoint:%d:%d:%d:%d", dimension, x, y, z);
+		invalidateNavigationCache();
+		markNavigationControlChanged();
+	}
+
+	public boolean isNavigationTargetWaypoint() {
+		return navigationTargetIsWaypoint;
+	}
+
+	public String getNavigationWaypointName() {
+		return navigationWaypointName;
+	}
+
+	public String getNavigationWaypointSource() {
+		return navigationWaypointSource;
+	}
+
+	public int getNavigationWaypointDimension() {
+		return navigationWaypointDimension;
+	}
+
+	public int getNavigationWaypointX() {
+		return navigationWaypointX;
+	}
+
+	public int getNavigationWaypointY() {
+		return navigationWaypointY;
+	}
+
+	public int getNavigationWaypointZ() {
+		return navigationWaypointZ;
+	}
+
 	public void clearNavigationTarget() {
-		setNavigationTargetId("");
+		navigationTargetId = "";
+		navigationTargetIsWaypoint = false;
+		navigationWaypointName = "";
+		navigationWaypointSource = "";
+		invalidateNavigationCache();
+		markNavigationControlChanged();
 	}
 
 	public String getNavigationEngagedTargetId() {
@@ -667,11 +729,50 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 
 	public void setNavigationEngagedTargetId(final String navigationEngagedTargetId) {
 		this.navigationEngagedTargetId = navigationEngagedTargetId == null ? "" : navigationEngagedTargetId;
-		markDirty();
+		navigationEngagedCancelled = false;
+		navigationEngagedPaused = false;
+		markNavigationControlChanged();
 	}
 
 	public void clearNavigationEngagedTargetId() {
 		navigationEngagedTargetId = "";
+		navigationEngagedCancelled = false;
+		navigationEngagedPaused = false;
+		markNavigationControlChanged();
+	}
+
+	public void copyNavigationControlStateFrom(@Nonnull final TileEntityShipCore source) {
+		if (source.navigationControlRevision <= navigationControlRevision) {
+			return;
+		}
+		navigationTargetId = source.navigationTargetId;
+		navigationEngagedTargetId = source.navigationEngagedTargetId;
+		navigationEngagedCancelled = source.navigationEngagedCancelled;
+		navigationEngagedPaused = source.navigationEngagedPaused;
+		navigationTargetIsWaypoint = source.navigationTargetIsWaypoint;
+		navigationWaypointName = source.navigationWaypointName;
+		navigationWaypointSource = source.navigationWaypointSource;
+		navigationWaypointDimension = source.navigationWaypointDimension;
+		navigationWaypointX = source.navigationWaypointX;
+		navigationWaypointY = source.navigationWaypointY;
+		navigationWaypointZ = source.navigationWaypointZ;
+		autopilotMode = source.autopilotMode;
+		autopilotStatus = source.autopilotStatus;
+		autopilotSingleStep = source.autopilotSingleStep;
+		autopilotLegsExecuted = source.autopilotLegsExecuted;
+		autopilotRetryCount = source.autopilotRetryCount;
+		autopilotLastErrorKey = source.autopilotLastErrorKey;
+		autopilotWaitUntilTick = source.autopilotWaitUntilTick;
+		navigationControlRevision = source.navigationControlRevision;
+		invalidateNavigationCache();
+		markDirty();
+	}
+
+	private void markNavigationControlChanged() {
+		synchronized (TileEntityShipCore.class) {
+			navigationControlSequence = Math.max(navigationControlSequence + 1L, navigationControlRevision + 1L);
+			navigationControlRevision = navigationControlSequence;
+		}
 		markDirty();
 	}
 
@@ -685,9 +786,10 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		autopilotMode = mode == null ? EnumShipAutopilotMode.OFF : mode;
 		if (autopilotMode == EnumShipAutopilotMode.OFF) {
 			autopilotStatus = EnumShipAutopilotStatus.IDLE;
+			navigationEngagedPaused = false;
 		}
 		invalidateNavigationCache();
-		markDirty();
+		markNavigationControlChanged();
 	}
 
 	public EnumShipAutopilotStatus getAutopilotStatus() {
@@ -711,7 +813,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		autopilotRetryCount = 0;
 		autopilotLastErrorKey = "";
 		autopilotStatus = EnumShipAutopilotStatus.RUNNING;
-		markDirty();
+		markNavigationControlChanged();
 	}
 
 	public void cancelAutopilot() {
@@ -721,36 +823,70 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		autopilotSingleStep = false;
 		autopilotLastErrorKey = "";
 		autopilotWaitUntilTick = 0L;
-		clearNavigationEngagedTargetId();
+		if (isJumpInProgress() || isCommandConfirmed) {
+			navigationEngagedCancelled = true;
+			markNavigationControlChanged();
+		} else {
+			clearNavigationEngagedTargetId();
+		}
 	}
 
 	public void pauseAutopilot() {
 		if (autopilotStatus.isActive() || autopilotStatus == EnumShipAutopilotStatus.WAITING_CONFIRM) {
 			autopilotStatus = EnumShipAutopilotStatus.PAUSED;
-			markDirty();
+			navigationEngagedPaused = !navigationEngagedTargetId.isEmpty();
+			markNavigationControlChanged();
 		}
 	}
 
 	public void resumeAutopilot() {
 		if (autopilotStatus == EnumShipAutopilotStatus.PAUSED) {
-			autopilotStatus = EnumShipAutopilotStatus.RUNNING;
+			autopilotStatus = autopilotSingleStep && navigationEngagedTargetId.isEmpty()
+			                ? EnumShipAutopilotStatus.WAITING_CONFIRM
+			                : EnumShipAutopilotStatus.RUNNING;
+			if (autopilotStatus == EnumShipAutopilotStatus.WAITING_CONFIRM) {
+				autopilotSingleStep = false;
+			}
+			navigationEngagedPaused = false;
 			autopilotWaitUntilTick = 0L;
-			markDirty();
+			markNavigationControlChanged();
 		}
 	}
 
 	// invoked by JumpSequencer on the success branch, with the destination that was engaged
 	public void onNavigationMovementCompleted(@Nonnull final String navigationEngagedTargetId) {
-		if (navigationEngagedTargetId.isEmpty() || navigationTargetId.isEmpty()) {
+		if (navigationEngagedTargetId.isEmpty()) {
+			return;
+		}
+		if (navigationTargetId.isEmpty()) {
+			if (this.navigationEngagedTargetId.equals(navigationEngagedTargetId)) {
+				clearNavigationEngagedTargetId();
+			}
 			return;
 		}
 		if (!this.navigationEngagedTargetId.equals(navigationEngagedTargetId)) {
 			return;
 		}
+		if (!navigationTargetId.equals(navigationEngagedTargetId)) {
+			clearNavigationEngagedTargetId();
+			autopilotStatus = EnumShipAutopilotStatus.IDLE;
+			markDirty();
+			return;
+		}
+		if (navigationEngagedCancelled) {
+			clearNavigationEngagedTargetId();
+			return;
+		}
 		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(world, pos.getX(), pos.getZ());
-		final CelestialObject celestialObjectTarget = CelestialObjectManager.get(false, navigationTargetId);
+		final CelestialObject celestialObjectTarget = navigationTargetIsWaypoint ? null : CelestialObjectManager.get(false, navigationTargetId);
 		if (ShipNavigationHelper.isAtNavigationDestination(this, celestialObjectCurrent, celestialObjectTarget)) {
 			onAutopilotArrived();
+			return;
+		}
+		if (navigationEngagedPaused) {
+			clearNavigationEngagedTargetId();
+			autopilotStatus = EnumShipAutopilotStatus.PAUSED;
+			markDirty();
 			return;
 		}
 		refreshShipScanCacheTimestamp();
@@ -841,7 +977,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		}
 
 		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(world, pos.getX(), pos.getZ());
-		final CelestialObject celestialObjectTarget = CelestialObjectManager.get(false, navigationTargetId);
+		final CelestialObject celestialObjectTarget = navigationTargetIsWaypoint ? null : CelestialObjectManager.get(false, navigationTargetId);
 		if (ShipNavigationHelper.isAtNavigationDestination(this, celestialObjectCurrent, celestialObjectTarget)) {
 			onAutopilotArrived();
 			return;
@@ -886,7 +1022,8 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 			return;
 		}
 
-		if (autopilotLegsExecuted >= AUTOPILOT_MAX_LEGS) {
+		final int maximumLegs = navigationTargetIsWaypoint ? AUTOPILOT_MAX_WAYPOINT_LEGS : AUTOPILOT_MAX_LEGS;
+		if (autopilotLegsExecuted >= maximumLegs) {
 			autopilotFail("warpdrive.navigation.autopilot.too_many_legs");
 			return;
 		}
@@ -1810,6 +1947,16 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		}
 		navigationTargetId = tagCompound.getString("navigationTargetId");
 		navigationEngagedTargetId = tagCompound.getString("navigationEngagedTargetId");
+		navigationEngagedCancelled = tagCompound.getBoolean("navigationEngagedCancelled");
+		navigationEngagedPaused = tagCompound.getBoolean("navigationEngagedPaused");
+		navigationTargetIsWaypoint = tagCompound.getBoolean("navigationTargetIsWaypoint");
+		navigationWaypointName = tagCompound.getString("navigationWaypointName");
+		navigationWaypointSource = tagCompound.getString("navigationWaypointSource");
+		navigationWaypointDimension = tagCompound.getInteger("navigationWaypointDimension");
+		navigationWaypointX = tagCompound.getInteger("navigationWaypointX");
+		navigationWaypointY = tagCompound.getInteger("navigationWaypointY");
+		navigationWaypointZ = tagCompound.getInteger("navigationWaypointZ");
+		navigationControlRevision = tagCompound.getLong("navigationControlRevision");
 		autopilotMode = EnumShipAutopilotMode.get(tagCompound.getString("autopilotMode"));
 		// never blind-resume a half-flown route across a reload: keep the destination, but require a fresh Engage.
 		// the leg counter is preserved so the per-route oscillation cap survives the serialize/deserialize a jump performs.
@@ -1843,6 +1990,16 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		}
 		tagCompound.setString("navigationTargetId", navigationTargetId);
 		tagCompound.setString("navigationEngagedTargetId", navigationEngagedTargetId);
+		tagCompound.setBoolean("navigationEngagedCancelled", navigationEngagedCancelled);
+		tagCompound.setBoolean("navigationEngagedPaused", navigationEngagedPaused);
+		tagCompound.setBoolean("navigationTargetIsWaypoint", navigationTargetIsWaypoint);
+		tagCompound.setString("navigationWaypointName", navigationWaypointName);
+		tagCompound.setString("navigationWaypointSource", navigationWaypointSource);
+		tagCompound.setInteger("navigationWaypointDimension", navigationWaypointDimension);
+		tagCompound.setInteger("navigationWaypointX", navigationWaypointX);
+		tagCompound.setInteger("navigationWaypointY", navigationWaypointY);
+		tagCompound.setInteger("navigationWaypointZ", navigationWaypointZ);
+		tagCompound.setLong("navigationControlRevision", navigationControlRevision);
 		tagCompound.setString("autopilotMode", autopilotMode.getName());
 		tagCompound.setInteger("autopilotLegs", autopilotLegsExecuted);
 		tagCompound.setBoolean("autopilotSingleStep", autopilotSingleStep);

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added atmospheric waypoint navigation and autopilot routing from VoxelMap, Xaero's Minimap, and JourneyMap.
+- Added server-authoritative terrain scanning that lands the full ship box above the highest block in its footprint.
+
+### Changed
+
+- Long same-dimension jumps now always validate final collisions, anchors, events, and protection before block deployment.
+
 ## 1.5.29 - 2026-06-28
 
 ### Added

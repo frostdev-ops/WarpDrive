@@ -1,6 +1,8 @@
 package cr0s.warpdrive.client.gui;
 
 import cr0s.warpdrive.Commons;
+import cr0s.warpdrive.client.waypoint.WaypointDiscovery;
+import cr0s.warpdrive.client.waypoint.WaypointDiscovery.MapWaypoint;
 import cr0s.warpdrive.data.EnumShipNavigationLegType;
 import cr0s.warpdrive.network.MessageShipNavigationAction;
 import cr0s.warpdrive.network.PacketHandler;
@@ -79,6 +81,7 @@ public class GuiShipNavigation extends GuiScreen {
 	private enum Tab {
 		MAP("warpdrive.navigation.gui.tab.map"),
 		DESTINATIONS("warpdrive.navigation.gui.tab.destinations"),
+		WAYPOINTS("warpdrive.navigation.gui.tab.waypoints"),
 		SHIP("warpdrive.navigation.gui.tab.ship"),
 		DIMENSIONS("warpdrive.navigation.gui.tab.dimensions"),
 		MOVE("warpdrive.navigation.gui.tab.move"),
@@ -100,11 +103,18 @@ public class GuiShipNavigation extends GuiScreen {
 	private final ArrayList<RouteLeg> routeLegs = new ArrayList<>();
 	private final ArrayList<DestinationEntry> destinations = new ArrayList<>();
 	private final ArrayList<DestinationRow> destinationRows = new ArrayList<>();
+	private final ArrayList<MapWaypoint> waypoints = new ArrayList<>();
 	private final ArrayList<GuiTextField> textFields = new ArrayList<>();
 	private Tab selectedTab = Tab.MAP;
 	private String selectedId = "";
 	private String currentId = "";
 	private String targetId = "";
+	private boolean targetIsWaypoint;
+	private String targetWaypointName = "";
+	private String targetWaypointSource = "";
+	private int targetWaypointX;
+	private int targetWaypointY;
+	private int targetWaypointZ;
 	private String routeStatusKey = "";
 	private String routeWarningKey = "";
 	private int routeWarningStep;
@@ -163,6 +173,7 @@ public class GuiShipNavigation extends GuiScreen {
 	private int dragLastX;
 	private int dragLastY;
 	private int destinationsScroll;
+	private int waypointsScroll;
 
 	private String shipNameInput = "";
 	private String energyUnitsInput = "";
@@ -238,6 +249,12 @@ public class GuiShipNavigation extends GuiScreen {
 		currentId = this.snapshot.getString("currentCelestialId");
 		final String previousTargetId = targetId;
 		targetId = this.snapshot.getString("navigationTargetId");
+		targetIsWaypoint = this.snapshot.getBoolean("navigationTargetIsWaypoint");
+		targetWaypointName = this.snapshot.getString("navigationWaypointName");
+		targetWaypointSource = this.snapshot.getString("navigationWaypointSource");
+		targetWaypointX = this.snapshot.getInteger("navigationWaypointX");
+		targetWaypointY = this.snapshot.getInteger("navigationWaypointY");
+		targetWaypointZ = this.snapshot.getInteger("navigationWaypointZ");
 		notice = this.snapshot.getString("notice");
 		allowed = this.snapshot.getBoolean("allowed");
 		// clear a stale selection ring once the server confirms a cancel
@@ -565,6 +582,8 @@ public class GuiShipNavigation extends GuiScreen {
 			break;
 		case DESTINATIONS:
 			break;
+		case WAYPOINTS:
+			break;
 		case SHIP:
 			addShipButtonsAndFields();
 			break;
@@ -764,6 +783,9 @@ public class GuiShipNavigation extends GuiScreen {
 		final int tabLast = BUTTON_TAB_BASE + Tab.values().length - 1;
 		if (button.id >= BUTTON_TAB_BASE && button.id <= tabLast) {
 			selectedTab = Tab.values()[button.id - BUTTON_TAB_BASE];
+			if (selectedTab == Tab.WAYPOINTS) {
+				refreshWaypoints();
+			}
 			initGui();
 			return;
 		}
@@ -899,6 +921,23 @@ public class GuiShipNavigation extends GuiScreen {
 		PacketHandler.sendShipNavigationAction(action, dimensionId, blockPosCore, blockPosAccess, targetIdOrMode);
 	}
 
+	private void refreshWaypoints() {
+		waypoints.clear();
+		waypoints.addAll(WaypointDiscovery.getWaypoints(dimensionId));
+		waypointsScroll = 0;
+	}
+
+	private void planWaypoint(final MapWaypoint waypoint) {
+		final NBTTagCompound payload = new NBTTagCompound();
+		payload.setString("name", waypoint.name);
+		payload.setString("source", waypoint.source);
+		payload.setInteger("dimension", dimensionId);
+		payload.setInteger("x", waypoint.x);
+		payload.setInteger("z", waypoint.z);
+		PacketHandler.sendShipNavigationAction(MessageShipNavigationAction.ACTION_PLAN_WAYPOINT,
+		                                       dimensionId, blockPosCore, blockPosAccess, payload);
+	}
+
 	private NBTTagCompound readShipFields() {
 		final NBTTagCompound payload = new NBTTagCompound();
 		payload.setString("name", fieldShipName == null ? shipNameInput : fieldShipName.getText());
@@ -1020,6 +1059,10 @@ public class GuiShipNavigation extends GuiScreen {
 			selectDestination(mouseY);
 			return;
 		}
+		if (selectedTab == Tab.WAYPOINTS && mouseButton == 0 && isInsideWaypointList(mouseX, mouseY)) {
+			selectWaypoint(mouseY);
+			return;
+		}
 		if (mouseButton == 0 && isInsideMap(mouseX, mouseY) && !isOverMapButton(mouseX, mouseY)) {
 			isDraggingMap = true;
 			dragStartX = mouseX;
@@ -1072,6 +1115,10 @@ public class GuiShipNavigation extends GuiScreen {
 		final int mouseY = height - Mouse.getEventY() * height / mc.displayHeight - 1;
 		if (selectedTab == Tab.DESTINATIONS && isInsidePanelList(mouseX, mouseY)) {
 			destinationsScroll = Math.max(0, destinationsScroll - Integer.signum(wheel));
+			return;
+		}
+		if (selectedTab == Tab.WAYPOINTS && isInsideWaypointList(mouseX, mouseY)) {
+			waypointsScroll = Math.max(0, waypointsScroll - Integer.signum(wheel));
 			return;
 		}
 		if (!isInsideMap(mouseX, mouseY)) {
@@ -1128,6 +1175,23 @@ public class GuiShipNavigation extends GuiScreen {
 			selectedId = entry.id;
 			setMapViewForSelectedTarget(entry.id);
 			sendAction(MessageShipNavigationAction.ACTION_PLAN, entry.id);
+			selectedTab = Tab.MAP;
+			initGui();
+		}
+	}
+
+	private void selectWaypoint(final int mouseY) {
+		if (!allowed) {
+			return;
+		}
+		final int rowHeight = 24;
+		final int index = waypointsScroll + (mouseY - waypointListTop()) / rowHeight;
+		if (index >= 0 && index < waypoints.size()) {
+			final MapWaypoint waypoint = waypoints.get(index);
+			targetId = "";
+			selectedId = "";
+			canEngage = false;
+			planWaypoint(waypoint);
 			selectedTab = Tab.MAP;
 			initGui();
 		}
@@ -1513,6 +1577,9 @@ public class GuiShipNavigation extends GuiScreen {
 		case DESTINATIONS:
 			drawDestinationsTab(mouseX, mouseY);
 			break;
+		case WAYPOINTS:
+			drawWaypointsTab(mouseX, mouseY);
+			break;
 		case SHIP:
 			drawShipTab();
 			break;
@@ -1545,7 +1612,17 @@ public class GuiShipNavigation extends GuiScreen {
 		final MapObject selected = findObject(selectedId);
 		fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.destination"), panelX + 10, y, COLOR_LABEL);
 		y += 12;
-		if (selected == null) {
+		if (targetIsWaypoint && !targetId.isEmpty()) {
+			final String waypointTitle = targetWaypointName.isEmpty()
+			                           ? I18n.format("warpdrive.navigation.gui.waypoint") : targetWaypointName;
+			fontRenderer.drawString(trimToWidth(waypointTitle, panelWidth - 20), panelX + 10, y, 0xFFFFFFFF);
+			y += 10;
+			fontRenderer.drawString(trimToWidth(targetWaypointSource + "  X " + Commons.format(targetWaypointX)
+			                                           + " Y " + Commons.format(targetWaypointY)
+			                                           + " Z " + Commons.format(targetWaypointZ), panelWidth - 20),
+			                        panelX + 10, y, COLOR_TEXT_DIM);
+			y += 14;
+		} else if (selected == null) {
 			fontRenderer.drawString(allowed ? I18n.format("warpdrive.navigation.gui.no_target") : I18n.format("warpdrive.navigation.gui.access_denied"),
 			                        panelX + 10, y, allowed ? COLOR_TEXT : COLOR_WARN);
 			y += 14;
@@ -1629,6 +1706,38 @@ public class GuiShipNavigation extends GuiScreen {
 		}
 		if (destinationRows.size() > rows) {
 			fontRenderer.drawString("^v " + (destinationsScroll + 1) + "/" + destinationRows.size(), panelX + panelWidth - 56, panelContentY(), COLOR_TEXT_DIM);
+		}
+	}
+
+	private void drawWaypointsTab(final int mouseX, final int mouseY) {
+		fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.waypoints_hint"), panelX + 10, panelContentY() + 4, COLOR_TEXT_DIM);
+		final int rowHeight = 24;
+		final int listTop = waypointListTop();
+		final int rows = Math.max(1, (panelY + panelHeight - 14 - listTop) / rowHeight);
+		waypointsScroll = Math.max(0, Math.min(waypointsScroll, Math.max(0, waypoints.size() - rows)));
+		if (waypoints.isEmpty()) {
+			fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.no_waypoints"), panelX + 10, listTop + 4, COLOR_AMBER);
+			return;
+		}
+		for (int row = 0; row < rows; row++) {
+			final int index = waypointsScroll + row;
+			if (index >= waypoints.size()) {
+				break;
+			}
+			final MapWaypoint waypoint = waypoints.get(index);
+			final int y = listTop + row * rowHeight;
+			final boolean hover = mouseX >= panelX + 6 && mouseX <= panelX + panelWidth - 6
+			                   && mouseY >= y - 1 && mouseY < y + rowHeight - 1;
+			drawRect(panelX + 6, y - 1, panelX + panelWidth - 6, y + rowHeight - 2,
+			         hover ? 0x44304B5B : 0x22141E2A);
+			fontRenderer.drawString(trimToWidth(waypoint.name, panelWidth - 24), panelX + 12, y + 2, 0xFFFFFFFF);
+			final String coordinates = waypoint.source + "  X " + Commons.format(waypoint.x)
+			                         + " Y " + Commons.format(waypoint.y) + " Z " + Commons.format(waypoint.z);
+			fontRenderer.drawString(trimToWidth(coordinates, panelWidth - 24), panelX + 12, y + 12, COLOR_TEXT_DIM);
+		}
+		if (waypoints.size() > rows) {
+			fontRenderer.drawString("^v " + (waypointsScroll + 1) + "/" + waypoints.size(),
+			                        panelX + panelWidth - 56, panelContentY() + 18, COLOR_TEXT_DIM);
 		}
 	}
 
@@ -1781,6 +1890,10 @@ public class GuiShipNavigation extends GuiScreen {
 		return panelContentY() + 14;
 	}
 
+	private int waypointListTop() {
+		return panelContentY() + 24;
+	}
+
 	private float renderedRadius(final MapObject mapObject) {
 		final double bodyRadius = Math.max(mapObject.borderRadiusX, mapObject.borderRadiusZ) * mapScale();
 		final float minimum = mapObject.hyperspace ? 13.0F : mapObject.space ? 10.0F : 6.0F;
@@ -1877,6 +1990,11 @@ public class GuiShipNavigation extends GuiScreen {
 
 	private boolean isInsidePanelList(final int x, final int y) {
 		return x >= panelX && x <= panelX + panelWidth && y >= destinationListTop() && y <= panelY + panelHeight - 12;
+	}
+
+	private boolean isInsideWaypointList(final int x, final int y) {
+		return x >= panelX && x <= panelX + panelWidth
+		    && y >= waypointListTop() && y <= panelY + panelHeight - 12;
 	}
 
 	private boolean isOverMapButton(final int x, final int y) {
