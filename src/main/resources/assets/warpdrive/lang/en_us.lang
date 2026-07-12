@@ -17,6 +17,14 @@ death.attack.warpdrive.warm.player=%1$s was cooked by %2$s
 itemGroup.warpdrive.hull=WarpDrive's hulls
 itemGroup.warpdrive.main=WarpDrive
 
+planet.warpdrive_space_101=Sol
+planet.warpdrive_space_102=Aurora
+planet.warpdrive_space_103=Verdance
+planet.warpdrive_space_104=Umbra
+planet.warpdrive_space_105=Alpha Centauri
+planet.warpdrive_space_106=Barnard's Star
+planet.warpdrive_space_107=Tau Ceti
+
 item.warpdrive.component.malformed.name=Bad Item
 item.warpdrive.component.memory_crystal.name=Memory Crystal
 item.warpdrive.component.memory_cluster.name=Memory Cluster
