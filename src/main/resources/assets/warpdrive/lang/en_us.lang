@@ -1127,6 +1127,7 @@ warpdrive.navigation.gui.surface_chart=Surface chart
 warpdrive.navigation.gui.surface_hint=Click a pin or the terrain to set the destination
 warpdrive.navigation.gui.map_click=Map click
 warpdrive.navigation.gui.plan_throttled=Plotting...
+warpdrive.navigation.gui.unscanned=Unscanned
 warpdrive.navigation.gui.no_waypoint_matches=No waypoints match the search.
 warpdrive.navigation.gui.rescan=Rescan
 warpdrive.navigation.gui.status.ok=OK

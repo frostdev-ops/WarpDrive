@@ -15,6 +15,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.gui.GuiTextField;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.BufferBuilder;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.Tessellator;
@@ -188,6 +189,9 @@ public class GuiShipNavigation extends GuiScreen {
 	private double surfaceZoom = 1.0D;
 	private boolean isSurfaceViewInitialized;
 	private int lastPlanClickTick = -200;
+	private final SurfaceTerrainCache surfaceTerrainCache = new SurfaceTerrainCache();
+	private boolean wasJumpInProgress;
+	private int lastDimensionSeen = Integer.MIN_VALUE;
 	private boolean isDraggingMap;
 	private int dragStartX;
 	private int dragStartY;
@@ -315,6 +319,13 @@ public class GuiShipNavigation extends GuiScreen {
 		autopilotStatus = driveStatus.getString("autopilotStatus");
 		autopilotLegs = driveStatus.getInteger("autopilotLegs");
 		snapshotClientTick = clientTick;
+		// terrain may have changed under the ship after a jump or dimension transition
+		if ( dimensionId != lastDimensionSeen
+		  || (wasJumpInProgress && !jumpInProgress) ) {
+			surfaceTerrainCache.invalidate();
+		}
+		lastDimensionSeen = dimensionId;
+		wasJumpInProgress = jumpInProgress;
 
 		updateStaticMapFromCache();
 		updateMapViewDefaults();
@@ -1413,6 +1424,12 @@ public class GuiShipNavigation extends GuiScreen {
 	}
 
 	@Override
+	public void onGuiClosed() {
+		super.onGuiClosed();
+		surfaceTerrainCache.release();
+	}
+
+	@Override
 	public void updateScreen() {
 		super.updateScreen();
 		clientTick++;
@@ -1429,6 +1446,10 @@ public class GuiShipNavigation extends GuiScreen {
 		// keep surface pins fresh; the cache TTL makes this a cheap no-op most ticks
 		if (mapMode == MapMode.SURFACE && clientTick % 100 == 0) {
 			reloadWaypointsQuietly();
+		}
+		// budgeted terrain sampling, never in drawScreen
+		if (mapMode == MapMode.SURFACE) {
+			surfaceTerrainCache.update(mc.world, blockPosCore.getX(), blockPosCore.getZ());
 		}
 		// live polling: faster while a jump or autopilot leg is happening
 		if (allowed) {
@@ -1679,9 +1700,24 @@ public class GuiShipNavigation extends GuiScreen {
 		}
 	}
 
-	// terrain placeholder until the sampled terrain cache lands
 	private void drawSurfaceTerrain() {
-		drawRect(mapX + 1, mapY + 21, mapX + mapWidth - 1, mapY + mapHeight - 2, 0xFF0A1220);
+		final int canvasLeft = mapX + 1;
+		final int canvasTop = mapY + 21;
+		final int canvasRight = mapX + mapWidth - 1;
+		final int canvasBottom = mapY + mapHeight - 2;
+		// unscanned backdrop shows through wherever the terrain texture is transparent
+		drawRect(canvasLeft, canvasTop, canvasRight, canvasBottom, 0xFF0A1220);
+		drawCenteredString(fontRenderer, I18n.format("warpdrive.navigation.gui.unscanned"),
+		                   (canvasLeft + canvasRight) / 2, (canvasTop + canvasBottom) / 2 - 4, 0xFF1C2C42);
+		final ScaledResolution scaledResolution = new ScaledResolution(mc);
+		final int factor = scaledResolution.getScaleFactor();
+		GL11.glEnable(GL11.GL_SCISSOR_TEST);
+		GL11.glScissor(canvasLeft * factor, mc.displayHeight - canvasBottom * factor,
+		               (canvasRight - canvasLeft) * factor, (canvasBottom - canvasTop) * factor);
+		surfaceTerrainCache.draw(canvasLeft, canvasTop, canvasRight, canvasBottom,
+		                         surfaceCenterX, surfaceCenterZ, surfaceZoom);
+		GL11.glDisable(GL11.GL_SCISSOR_TEST);
+		GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
 	}
 
 	private void drawSurfaceGrid() {
