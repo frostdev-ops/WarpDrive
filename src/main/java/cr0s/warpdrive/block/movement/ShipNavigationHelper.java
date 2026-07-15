@@ -35,6 +35,7 @@ public final class ShipNavigationHelper {
 	private static final long WAYPOINT_MAX_BLOCK_CHECKS = 500_000L;
 	private static final int WAYPOINT_LABEL_MAX_LENGTH = 64;
 	private static final int LANDING_GRID_MAX_SIZE = 16;
+	private static final long LANDING_PROBE_TTL_TICKS = 600L;
 	private static final int MAP_VERSION = 2;
 
 	private ShipNavigationHelper() {
@@ -102,6 +103,10 @@ public final class ShipNavigationHelper {
 			tagCompound.setInteger("navigationWaypointX", shipCore.getNavigationWaypointX());
 			tagCompound.setInteger("navigationWaypointY", shipCore.getNavigationWaypointY());
 			tagCompound.setInteger("navigationWaypointZ", shipCore.getNavigationWaypointZ());
+			final NBTTagCompound tagWaypointLanding = writeWaypointLanding(shipCore);
+			if (tagWaypointLanding != null) {
+				tagCompound.setTag("waypointLanding", tagWaypointLanding);
+			}
 		}
 		tagCompound.setInteger("mapVersion", getMapVersion());
 		tagCompound.setLong("serverTimeMs", shipCore.getWorld().getTotalWorldTime() * 50L);
@@ -440,7 +445,9 @@ public final class ShipNavigationHelper {
 			if (nextLeg == null) {
 				return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.no_route", "warpdrive.navigation.route.waypoint_unavailable");
 			}
-			return readyRoute(shipCore, tagCompound, tagListLegs, nextLeg);
+			readyRoute(shipCore, tagCompound, tagListLegs, nextLeg);
+			writeWaypointRouteTelemetry(shipCore, tagCompound, nextLeg);
+			return tagCompound;
 		}
 		if (celestialObjectTarget == null) {
 			return route(tagCompound, tagListLegs, false, "warpdrive.navigation.route.select_destination", "");
@@ -482,7 +489,7 @@ public final class ShipNavigationHelper {
 		tagCompound.setString("blockerKey", preview.canEngage ? "" : preview.blockerKey);
 		tagCompound.setString("blockerMessage", preview.canEngage ? "" : preview.blockerMessage);
 		tagCompound.setTag("validation", preview.writeToNBT());
-		tagListLegs.appendTag(writeLeg(nextLeg, preview));
+		tagListLegs.appendTag(writeLeg(shipCore, nextLeg, preview));
 		tagCompound.setTag("legs", tagListLegs);
 		return tagCompound;
 	}
@@ -537,7 +544,8 @@ public final class ShipNavigationHelper {
 	}
 
 	@Nonnull
-	private static NBTTagCompound writeLeg(@Nonnull final Leg leg, @Nonnull final ShipMovementPreview preview) {
+	private static NBTTagCompound writeLeg(@Nonnull final TileEntityShipCore shipCore,
+	                                       @Nonnull final Leg leg, @Nonnull final ShipMovementPreview preview) {
 		final NBTTagCompound tagCompound = new NBTTagCompound();
 		tagCompound.setString("type", leg.type.getName());
 		tagCompound.setString("command", leg.command.getName());
@@ -547,11 +555,88 @@ public final class ShipNavigationHelper {
 		tagCompound.setBoolean("requiresConfirmation", leg.requiresConfirmation);
 		tagCompound.setBoolean("preview", false);
 		tagCompound.setString("warningKey", leg.warningKey);
+		tagCompound.setBoolean("detour", "warpdrive.navigation.route.waypoint_detour".equals(leg.warningKey));
 		tagCompound.setInteger("stepDistance", leg.stepDistance);
 		tagCompound.setInteger("remainingDistance", leg.remainingDistance);
 		tagCompound.setInteger("effectiveDistance", preview.effectiveDistance);
 		tagCompound.setInteger("maximumDistance", preview.maximumDistance);
 		tagCompound.setInteger("energyRequired", preview.energyRequired);
+		// world-space vector of this leg, for the client surface chart
+		final EnumFacing facing = getFacing(shipCore);
+		tagCompound.setInteger("worldMoveX", facing.getXOffset() * leg.moveFront - facing.getZOffset() * leg.moveRight);
+		tagCompound.setInteger("worldMoveY", leg.moveUp);
+		tagCompound.setInteger("worldMoveZ", facing.getZOffset() * leg.moveFront + facing.getXOffset() * leg.moveRight);
+		return tagCompound;
+	}
+
+	private static void writeWaypointRouteTelemetry(@Nonnull final TileEntityShipCore shipCore,
+	                                                @Nonnull final NBTTagCompound tagRoute,
+	                                                @Nonnull final Leg nextLeg) {
+		final int totalDistance = Math.max(shipCore.getNavigationWaypointInitialDistance(), nextLeg.remainingDistance);
+		tagRoute.setInteger("totalDistance", totalDistance);
+		tagRoute.setInteger("remainingDistance", nextLeg.remainingDistance);
+		tagRoute.setInteger("progressPermille", 1000 * (totalDistance - nextLeg.remainingDistance) / Math.max(1, totalDistance));
+		// aggregate estimate over the remaining route, same cost model as the destinations tab
+		final DestinationEstimate estimate = new DestinationEstimate();
+		addCruiseEstimate(shipCore, estimate, EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+		                  shipCore.getNavigationWaypointX() - shipCore.getPos().getX(),
+		                  shipCore.getNavigationWaypointY() - shipCore.getPos().getY(),
+		                  shipCore.getNavigationWaypointZ() - shipCore.getPos().getZ());
+		if (estimate.legs > 0) {
+			final NBTTagCompound tagEstimate = new NBTTagCompound();
+			tagEstimate.setInteger("legs", estimate.legs);
+			tagEstimate.setInteger("jumps", estimate.jumps);
+			tagEstimate.setLong("energy", estimate.energy);
+			tagEstimate.setInteger("eta", estimate.eta);
+			tagEstimate.setInteger("distance", estimate.distance);
+			tagEstimate.setInteger("maxRange", estimate.maxRange);
+			tagRoute.setTag("estimate", tagEstimate);
+		}
+	}
+
+	// cached landing probe for the ship footprint at the given position; grid always included
+	@Nonnull
+	static LandingProbe getCachedProbeLanding(@Nonnull final TileEntityShipCore shipCore,
+	                                          final int targetCoreX, final int targetCoreZ,
+	                                          @Nonnull final CelestialObject celestialObject,
+	                                          final long maxAgeTicks) {
+		final long key = ((long) targetCoreX << 26) ^ (targetCoreZ & 0x3FFFFFFL);
+		final LandingProbe cached = shipCore.getCachedLandingProbe(key, maxAgeTicks);
+		if (cached != null) {
+			return cached;
+		}
+		final LandingProbe probe = probeLanding(shipCore, targetCoreX, targetCoreZ, celestialObject,
+		                                        WAYPOINT_MAX_BLOCK_CHECKS, true);
+		shipCore.putCachedLandingProbe(key, probe);
+		return probe;
+	}
+
+	@Nullable
+	private static NBTTagCompound writeWaypointLanding(@Nonnull final TileEntityShipCore shipCore) {
+		final CelestialObject celestialObject = CelestialObjectManager.get(shipCore.getWorld(),
+		                                                                   shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ());
+		if ( celestialObject == null
+		  || celestialObject.isSpace()
+		  || celestialObject.isHyperspace()
+		  || shipCore.getWorld().provider.getDimension() != shipCore.getNavigationWaypointDimension() ) {
+			return null;
+		}
+		final LandingProbe probe = getCachedProbeLanding(shipCore,
+		                                                 shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ(),
+		                                                 celestialObject, LANDING_PROBE_TTL_TICKS);
+		final NBTTagCompound tagCompound = new NBTTagCompound();
+		tagCompound.setBoolean("valid", probe.landingCoreY != null);
+		tagCompound.setString("reasonKey", probe.reasonKey);
+		tagCompound.setInteger("landingY", probe.landingCoreY == null ? shipCore.getNavigationWaypointY() : probe.landingCoreY);
+		tagCompound.setInteger("highestSupportY", probe.highestSupportY);
+		if (probe.columnHeights != null) {
+			tagCompound.setInteger("originX", probe.originX);
+			tagCompound.setInteger("originZ", probe.originZ);
+			tagCompound.setInteger("stride", probe.gridStride);
+			tagCompound.setInteger("gridWidth", probe.gridWidth);
+			tagCompound.setInteger("gridDepth", probe.gridDepth);
+			tagCompound.setIntArray("heights", probe.columnHeights);
+		}
 		return tagCompound;
 	}
 

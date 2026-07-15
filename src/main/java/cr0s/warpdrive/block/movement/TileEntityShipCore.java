@@ -35,7 +35,9 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import java.lang.ref.WeakReference;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArraySet;
 
@@ -116,9 +118,30 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 	private int navigationWaypointX = 0;
 	private int navigationWaypointY = 0;
 	private int navigationWaypointZ = 0;
+	private int navigationWaypointInitialDistance = 0;
 	private long navigationControlRevision = 0L;
 	private String navigationHeavyCacheKey = "";
 	private NBTTagCompound navigationHeavyCache = null;
+	// transient landing probe cache: terrain scans are expensive, TTL acts as the terrain-version proxy
+	private static final int LANDING_PROBE_CACHE_MAX = 64;
+	private final LinkedHashMap<Long, CachedLandingProbe> landingProbeCache = new LinkedHashMap<Long, CachedLandingProbe>(16, 0.75F, true) {
+		@Override
+		protected boolean removeEldestEntry(final Map.Entry<Long, CachedLandingProbe> eldest) {
+			return size() > LANDING_PROBE_CACHE_MAX;
+		}
+	};
+
+	private static final class CachedLandingProbe {
+		private final ShipNavigationHelper.LandingProbe probe;
+		private final int scanSignature;
+		private final long timeTick;
+
+		private CachedLandingProbe(final ShipNavigationHelper.LandingProbe probe, final int scanSignature, final long timeTick) {
+			this.probe = probe;
+			this.scanSignature = scanSignature;
+			this.timeTick = timeTick;
+		}
+	}
 
 	// live status totals (for client warmup/cooldown progress bars)
 	private int warmupTotal_ticks = 0;
@@ -641,6 +664,22 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 	public void invalidateNavigationCache() {
 		navigationHeavyCacheKey = "";
 		navigationHeavyCache = null;
+		landingProbeCache.clear();
+	}
+
+	@Nullable
+	ShipNavigationHelper.LandingProbe getCachedLandingProbe(final long key, final long maxAgeTicks) {
+		final CachedLandingProbe cached = landingProbeCache.get(key);
+		if ( cached == null
+		  || cached.scanSignature != shipScanSignature
+		  || world.getTotalWorldTime() - cached.timeTick > maxAgeTicks ) {
+			return null;
+		}
+		return cached.probe;
+	}
+
+	void putCachedLandingProbe(final long key, @Nonnull final ShipNavigationHelper.LandingProbe probe) {
+		landingProbeCache.put(key, new CachedLandingProbe(probe, shipScanSignature, world.getTotalWorldTime()));
 	}
 
 	@Nullable
@@ -681,9 +720,14 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		navigationWaypointX = x;
 		navigationWaypointY = y;
 		navigationWaypointZ = z;
+		navigationWaypointInitialDistance = (int) Math.ceil(Math.sqrt(pos.distanceSq(x, y, z)));
 		navigationTargetId = String.format("waypoint:%d:%d:%d:%d", dimension, x, y, z);
 		invalidateNavigationCache();
 		markNavigationControlChanged();
+	}
+
+	public int getNavigationWaypointInitialDistance() {
+		return navigationWaypointInitialDistance;
 	}
 
 	public boolean isNavigationTargetWaypoint() {
@@ -756,6 +800,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		navigationWaypointX = source.navigationWaypointX;
 		navigationWaypointY = source.navigationWaypointY;
 		navigationWaypointZ = source.navigationWaypointZ;
+		navigationWaypointInitialDistance = source.navigationWaypointInitialDistance;
 		autopilotMode = source.autopilotMode;
 		autopilotStatus = source.autopilotStatus;
 		autopilotSingleStep = source.autopilotSingleStep;
@@ -1956,6 +2001,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		navigationWaypointX = tagCompound.getInteger("navigationWaypointX");
 		navigationWaypointY = tagCompound.getInteger("navigationWaypointY");
 		navigationWaypointZ = tagCompound.getInteger("navigationWaypointZ");
+		navigationWaypointInitialDistance = tagCompound.getInteger("navigationWaypointInitialDistance");
 		navigationControlRevision = tagCompound.getLong("navigationControlRevision");
 		autopilotMode = EnumShipAutopilotMode.get(tagCompound.getString("autopilotMode"));
 		// never blind-resume a half-flown route across a reload: keep the destination, but require a fresh Engage.
@@ -1999,6 +2045,7 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		tagCompound.setInteger("navigationWaypointX", navigationWaypointX);
 		tagCompound.setInteger("navigationWaypointY", navigationWaypointY);
 		tagCompound.setInteger("navigationWaypointZ", navigationWaypointZ);
+		tagCompound.setInteger("navigationWaypointInitialDistance", navigationWaypointInitialDistance);
 		tagCompound.setLong("navigationControlRevision", navigationControlRevision);
 		tagCompound.setString("autopilotMode", autopilotMode.getName());
 		tagCompound.setInteger("autopilotLegs", autopilotLegsExecuted);
