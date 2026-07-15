@@ -542,8 +542,7 @@ public class JumpShip {
 					for (int y = minY; y <= maxY; y++) {
 						for (int x = x1; x <= x2; x++) {
 							for (int z = z1; z <= z2; z++) {
-								mutableBlockPos.setPos(x, y, z);
-								blockPos = mutableBlockPos;
+								blockPos = mutableBlockPos.setPos(x, y, z);
 								final IBlockState blockState = world.getBlockState(blockPos);
 								final Block block = blockState.getBlock();
 								
@@ -551,6 +550,10 @@ public class JumpShip {
 								if (block == Blocks.AIR || Dictionary.BLOCKS_LEFTBEHIND.contains(block)) {
 									continue;
 								}
+								// Switch to an immutable position before it can escape: getTileEntity recreates a
+								// missing tile entity with the position instance it's given, so passing the mutable
+								// would corrupt that tile entity when the position is reused on the next block.
+								blockPos = mutableBlockPos.toImmutable();
 								actualVolume++;
 								
 								if (WarpDriveConfig.LOGGING_JUMPBLOCKS) {
