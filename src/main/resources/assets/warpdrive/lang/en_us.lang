@@ -1202,6 +1202,8 @@ warpdrive.navigation.autopilot.too_many_legs=route exceeded the maximum number o
 
 warpdrive.navigation.notice.destination_plotted=Destination plotted
 warpdrive.navigation.notice.waypoint_plotted=Surface waypoint plotted
+warpdrive.navigation.notice.probe_complete=Waypoint survey complete
+warpdrive.navigation.waypoint.alternate_found=Nearest valid landing site is %1$s, %2$s.
 warpdrive.navigation.notice.unable_to_plot_waypoint=Unable to find a safe landing site at that waypoint
 warpdrive.navigation.notice.unable_to_plot=Unable to plot destination
 warpdrive.navigation.notice.engaging_leg=Engaging next leg

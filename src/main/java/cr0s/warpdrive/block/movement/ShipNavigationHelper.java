@@ -26,6 +26,8 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.AxisAlignedBB;
 import net.minecraft.world.chunk.Chunk;
 
+import net.minecraftforge.common.util.Constants;
+
 public final class ShipNavigationHelper {
 
 	private static final int ORBIT_Y = 128;
@@ -36,6 +38,11 @@ public final class ShipNavigationHelper {
 	private static final int WAYPOINT_LABEL_MAX_LENGTH = 64;
 	private static final int LANDING_GRID_MAX_SIZE = 16;
 	private static final long LANDING_PROBE_TTL_TICKS = 600L;
+	private static final int PROBE_MAX_WAYPOINTS = 8;
+	private static final long PROBE_MAX_BLOCK_CHECKS_TOTAL = 500_000L;
+	private static final int ASSIST_MAX_RINGS = 2;
+	private static final int ASSIST_MAX_CANDIDATES = 8;
+	private static final long ASSIST_MAX_BLOCK_CHECKS_PER_CANDIDATE = 50_000L;
 	private static final int MAP_VERSION = 2;
 
 	private ShipNavigationHelper() {
@@ -599,16 +606,102 @@ public final class ShipNavigationHelper {
 	static LandingProbe getCachedProbeLanding(@Nonnull final TileEntityShipCore shipCore,
 	                                          final int targetCoreX, final int targetCoreZ,
 	                                          @Nonnull final CelestialObject celestialObject,
-	                                          final long maxAgeTicks) {
+	                                          final long maxAgeTicks, final long blockBudget) {
 		final long key = ((long) targetCoreX << 26) ^ (targetCoreZ & 0x3FFFFFFL);
 		final LandingProbe cached = shipCore.getCachedLandingProbe(key, maxAgeTicks);
 		if (cached != null) {
 			return cached;
 		}
 		final LandingProbe probe = probeLanding(shipCore, targetCoreX, targetCoreZ, celestialObject,
-		                                        WAYPOINT_MAX_BLOCK_CHECKS, true);
+		                                        blockBudget, true);
 		shipCore.putCachedLandingProbe(key, probe);
 		return probe;
+	}
+
+	// read-only dry-run survey of candidate waypoints; commits nothing
+	@Nonnull
+	public static NBTTagList probeWaypoints(@Nonnull final TileEntityShipCore shipCore,
+	                                        @Nonnull final NBTTagCompound payload) {
+		final NBTTagList results = new NBTTagList();
+		final NBTTagList tagListWaypoints = payload.getTagList("waypoints", Constants.NBT.TAG_COMPOUND);
+		final boolean assist = payload.getBoolean("assist");
+		final int count = Math.min(PROBE_MAX_WAYPOINTS, tagListWaypoints.tagCount());
+		if (count == 0) {
+			return results;
+		}
+		final long budgetPerWaypoint = PROBE_MAX_BLOCK_CHECKS_TOTAL / count;
+		for (int index = 0; index < count; index++) {
+			final NBTTagCompound tagWaypoint = tagListWaypoints.getCompoundTagAt(index);
+			final int dimension = tagWaypoint.getInteger("dimension");
+			final int waypointX = tagWaypoint.getInteger("x");
+			final int waypointZ = tagWaypoint.getInteger("z");
+			final NBTTagCompound tagResult = new NBTTagCompound();
+			tagResult.setInteger("dimension", dimension);
+			tagResult.setInteger("x", waypointX);
+			tagResult.setInteger("z", waypointZ);
+			final String reasonKeyRegion = validateWaypointRegion(shipCore, dimension, waypointX, waypointZ);
+			if (!reasonKeyRegion.isEmpty()) {
+				tagResult.setBoolean("valid", false);
+				tagResult.setString("reasonKey", reasonKeyRegion);
+				results.appendTag(tagResult);
+				continue;
+			}
+			final CelestialObject celestialObject = CelestialObjectManager.get(shipCore.getWorld(), waypointX, waypointZ);
+			assert celestialObject != null;
+			final LandingProbe probe = getCachedProbeLanding(shipCore, waypointX, waypointZ, celestialObject,
+			                                                 LANDING_PROBE_TTL_TICKS, budgetPerWaypoint);
+			tagResult.setBoolean("valid", probe.landingCoreY != null);
+			tagResult.setString("reasonKey", probe.reasonKey);
+			if (probe.landingCoreY != null) {
+				tagResult.setInteger("landingY", probe.landingCoreY);
+			} else if (assist && !probe.budgetExhausted) {
+				final int[] alternate = findAlternateLanding(shipCore, waypointX, waypointZ, celestialObject);
+				if (alternate != null) {
+					final NBTTagCompound tagAlternate = new NBTTagCompound();
+					tagAlternate.setInteger("x", alternate[0]);
+					tagAlternate.setInteger("z", alternate[1]);
+					tagAlternate.setInteger("landingY", alternate[2]);
+					tagResult.setTag("alternate", tagAlternate);
+				}
+			}
+			results.appendTag(tagResult);
+		}
+		return results;
+	}
+
+	// expanding ring scan for the nearest valid landing site around a rejected waypoint
+	@Nullable
+	private static int[] findAlternateLanding(@Nonnull final TileEntityShipCore shipCore,
+	                                          final int targetCoreX, final int targetCoreZ,
+	                                          @Nonnull final CelestialObject celestialObject) {
+		final int dimension = shipCore.getWorld().provider.getDimension();
+		final int strideX = shipCore.maxX - shipCore.minX + 1;
+		final int strideZ = shipCore.maxZ - shipCore.minZ + 1;
+		int candidates = 0;
+		for (int ring = 1; ring <= ASSIST_MAX_RINGS; ring++) {
+			for (int offsetX = -ring; offsetX <= ring; offsetX++) {
+				for (int offsetZ = -ring; offsetZ <= ring; offsetZ++) {
+					if (Math.max(Math.abs(offsetX), Math.abs(offsetZ)) != ring) {
+						continue;
+					}
+					if (candidates >= ASSIST_MAX_CANDIDATES) {
+						return null;
+					}
+					candidates++;
+					final int candidateX = targetCoreX + offsetX * strideX;
+					final int candidateZ = targetCoreZ + offsetZ * strideZ;
+					if (!validateWaypointRegion(shipCore, dimension, candidateX, candidateZ).isEmpty()) {
+						continue;
+					}
+					final LandingProbe probe = probeLanding(shipCore, candidateX, candidateZ, celestialObject,
+					                                        ASSIST_MAX_BLOCK_CHECKS_PER_CANDIDATE, false);
+					if (probe.landingCoreY != null) {
+						return new int[] { candidateX, candidateZ, probe.landingCoreY };
+					}
+				}
+			}
+		}
+		return null;
 	}
 
 	@Nullable
@@ -623,7 +716,7 @@ public final class ShipNavigationHelper {
 		}
 		final LandingProbe probe = getCachedProbeLanding(shipCore,
 		                                                 shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ(),
-		                                                 celestialObject, LANDING_PROBE_TTL_TICKS);
+		                                                 celestialObject, LANDING_PROBE_TTL_TICKS, WAYPOINT_MAX_BLOCK_CHECKS);
 		final NBTTagCompound tagCompound = new NBTTagCompound();
 		tagCompound.setBoolean("valid", probe.landingCoreY != null);
 		tagCompound.setString("reasonKey", probe.reasonKey);

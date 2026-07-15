@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import net.minecraft.entity.player.EntityPlayerMP;
 import net.minecraft.nbt.NBTTagCompound;
+import net.minecraft.nbt.NBTTagList;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.WorldServer;
@@ -36,6 +37,7 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 	public static final byte ACTION_RESUME = 9;
 	public static final byte ACTION_STEP = 10;
 	public static final byte ACTION_PLAN_WAYPOINT = 11;
+	public static final byte ACTION_PROBE_WAYPOINT = 12;
 	
 	private byte action;
 	private int dimensionId;
@@ -119,7 +121,7 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 	@SuppressWarnings("PMD.NPathComplexity")
 	private static void handle(final MessageShipNavigationAction message, final EntityPlayerMP entityPlayerMP) {
 		if ( message.action < ACTION_REFRESH
-		  || message.action > ACTION_PLAN_WAYPOINT ) {
+		  || message.action > ACTION_PROBE_WAYPOINT ) {
 			WarpDrive.logger.warn(String.format("Ignoring unknown ship navigation action %d from %s",
 			                                    message.action, entityPlayerMP));
 			return;
@@ -172,6 +174,7 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		}
 		String notice = "";
 		ShipMovementPreview preview = null;
+		NBTTagList probeResults = null;
 		switch (message.action) {
 		case ACTION_PLAN:
 			notice = ShipNavigationHelper.setDestination(entityPlayerMP, shipCore, message.targetId)
@@ -181,6 +184,12 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		case ACTION_PLAN_WAYPOINT:
 			final String reasonKeyWaypoint = ShipNavigationHelper.setWaypoint(entityPlayerMP, shipCore, message.payload);
 			notice = reasonKeyWaypoint.isEmpty() ? "warpdrive.navigation.notice.waypoint_plotted" : reasonKeyWaypoint;
+			break;
+
+		case ACTION_PROBE_WAYPOINT:
+			// read-only landing survey: never commits a target nor touches the autopilot
+			probeResults = ShipNavigationHelper.probeWaypoints(shipCore, message.payload);
+			notice = "warpdrive.navigation.notice.probe_complete";
 			break;
 
 		case ACTION_ENGAGE:
@@ -252,6 +261,9 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		// when this player's cached version is out of date (avoids rebuilding it on every periodic refresh)
 		PacketHandler.sendShipNavigationMapIfChanged(entityPlayerMP);
 		final NBTTagCompound tagCompound = ShipNavigationHelper.buildSnapshot(entityPlayerMP, shipCore, blockPosAccess, notice, preview);
+		if (probeResults != null) {
+			tagCompound.setTag("waypointProbe", probeResults);
+		}
 		PacketHandler.sendShipNavigationPacket(entityPlayerMP, tagCompound);
 	}
 	
@@ -272,6 +284,9 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 			break;
 		case ACTION_PLAN_WAYPOINT:
 			intervalMs = 5000L;
+			break;
+		case ACTION_PROBE_WAYPOINT:
+			intervalMs = 2000L;
 			break;
 		case ACTION_REFRESH:
 			intervalMs = 250L;
@@ -300,7 +315,8 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 		if (intervalMs <= 0L) {
 			return false;
 		}
-		final String actor = message.action == ACTION_PLAN_WAYPOINT ? "core" : entityPlayerMP.getUniqueID().toString();
+		final String actor = message.action == ACTION_PLAN_WAYPOINT || message.action == ACTION_PROBE_WAYPOINT
+		                   ? "core" : entityPlayerMP.getUniqueID().toString();
 		final String key = actor + ":" + message.action + ":" + message.dimensionId + ":"
 		                 + blockPosCore.getX() + ":" + blockPosCore.getY() + ":" + blockPosCore.getZ() + ":" + message.targetId;
 		final long now = System.currentTimeMillis();
