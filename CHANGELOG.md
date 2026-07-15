@@ -6,10 +6,18 @@
 
 - Added atmospheric waypoint navigation and autopilot routing from VoxelMap, Xaero's Minimap, and JourneyMap.
 - Added server-authoritative terrain scanning that lands the full ship box above the highest block in its footprint.
+- Added a planet surface chart to the navigation map: sampled terrain, waypoint pins, click-to-plot, ship heading, route and detour lines, and landing footprint preview.
+- Added a read-only waypoint landing survey action with per-waypoint rejection reasons and nearby-site suggestions.
+- Added waypoint route telemetry: progress, remaining legs/energy/ETA, and resolved landing altitude in the navigation snapshot.
+- Added terrain-following flight: cruise legs climb over obstructing terrain, hold altitude on descents, and the landing altitude self-heals when terrain changes mid-route.
+- Added waypoint list search, rescan, source grouping and colors, distance and bearing, and inline reachability status.
 
 ### Changed
 
 - Long same-dimension jumps now always validate final collisions, anchors, events, and protection before block deployment.
+- Waypoint plotting failures now report the specific reason (unexplored, too large, no support, too high, too low, outside border, survey budget) instead of a generic message.
+- Selecting a waypoint no longer switches away from the Waypoints tab.
+- Map addon waypoint discovery is cached for a few seconds instead of re-scanning on every refresh.
 
 ## 1.5.29 - 2026-06-28
 

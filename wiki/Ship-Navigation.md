@@ -11,6 +11,16 @@ The ship navigation interface is opened from a ship core or linked ship controll
 - The ship marker uses the ship core X/Z position while in space or hyperspace. When viewing the Hyperspace layer from normal space, the ship marker is anchored to the current solar-system region.
 - Celestial body tooltips show object id, type, and X/Z coordinates.
 
+## Surface Chart
+
+While the ship is in a planetary atmosphere, the map defaults to a Surface chart of the terrain around the ship (the Local/Hyperspace/Surface buttons switch views manually).
+
+- Terrain is drawn vanilla-map style from chunks loaded on the client; unexplored areas show as Unscanned.
+- The ship marker shows position and heading. Imported waypoints appear as pins colored by source, with a reachability ring once the landing survey completes.
+- Click a pin to plot it, or click anywhere on the terrain to plot that spot as a destination. The server resolves the safe landing altitude; plotting is throttled to one request every few seconds.
+- The active route is drawn to the target, with the next hop shown separately when it detours or climbs.
+- When a waypoint is targeted, the landing footprint is overlaid at the destination: highlighted cells are the columns that set the landing altitude (green when the site is valid, red when it blocks landing).
+
 ## Destinations
 
 The Destinations tab lists reachable objects and includes:
@@ -34,7 +44,9 @@ The Waypoints tab imports enabled waypoints from VoxelMap, Xaero's Minimap, and 
 - The entire landing box must be air, fit below build height, and remain inside the celestial border.
 - The landing footprint must be in previously generated terrain. Visit unexplored waypoint areas before plotting a ship route.
 - Large routes are split into ordinary planet-movement legs and use the selected autopilot mode.
-- Landing clearance is checked again immediately before the final leg deploys blocks.
+- Cruise legs sample the heightmap along the planned hop: the autopilot climbs to clear terrain ahead, holds altitude over obstructions when descending, and only detours or aborts when it cannot fit under the atmosphere ceiling.
+- Landing clearance is checked again immediately before the final leg deploys blocks. If terrain changed slightly since plotting, the landing altitude is re-resolved automatically (up to 8 blocks of drift).
+- The waypoint list shows distance, bearing, and a reachability badge per waypoint; rejected waypoints show the specific reason inline. The survey runs in the background and never changes the ship's target.
 
 ## Autopilot Modes
 
