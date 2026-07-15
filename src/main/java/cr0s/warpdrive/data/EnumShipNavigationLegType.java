@@ -16,6 +16,7 @@ public enum EnumShipNavigationLegType implements IStringSerializable {
 	TAKEOFF           ("takeoff"           , EnumShipCommand.MANUAL    , false),
 	ATMOSPHERIC_CRUISE("atmospheric_cruise", EnumShipCommand.MANUAL    , false),
 	ATMOSPHERIC_LANDING("atmospheric_landing", EnumShipCommand.MANUAL  , true ),
+	ATMOSPHERIC_CLIMB ("atmospheric_climb"  , EnumShipCommand.MANUAL    , false),
 	SPACE_CRUISE      ("space_cruise"      , EnumShipCommand.MANUAL    , false),
 	ORBITAL_APPROACH  ("orbital_approach"  , EnumShipCommand.MANUAL    , false),
 	HYPERSPACE_ENTER  ("hyperspace_enter"  , EnumShipCommand.HYPERDRIVE, true ),

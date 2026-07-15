@@ -721,6 +721,8 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 		navigationWaypointY = y;
 		navigationWaypointZ = z;
 		navigationWaypointInitialDistance = (int) Math.ceil(Math.sqrt(pos.distanceSq(x, y, z)));
+		autopilotLastClimbTopMinY = Integer.MIN_VALUE;
+		autopilotLastClimbPosXZ = Long.MIN_VALUE;
 		navigationTargetId = String.format("waypoint:%d:%d:%d:%d", dimension, x, y, z);
 		invalidateNavigationCache();
 		markNavigationControlChanged();
@@ -728,6 +730,36 @@ public class TileEntityShipCore extends TileEntityAbstractShipController impleme
 
 	public int getNavigationWaypointInitialDistance() {
 		return navigationWaypointInitialDistance;
+	}
+
+	// self-heal: terrain drifted between planning and the final hop, re-aim at the freshly resolved altitude
+	public void retargetNavigationWaypointY(final int newY) {
+		if (!navigationTargetIsWaypoint || navigationWaypointY == newY) {
+			return;
+		}
+		navigationWaypointY = newY;
+		navigationTargetId = String.format("waypoint:%d:%d:%d:%d",
+		                                   navigationWaypointDimension, navigationWaypointX, navigationWaypointY, navigationWaypointZ);
+		// keep the engaged id in sync when a leg toward this waypoint is mid-flight
+		if (navigationEngagedTargetId.startsWith("waypoint:")) {
+			navigationEngagedTargetId = navigationTargetId;
+		}
+		invalidateNavigationCache();
+		markNavigationControlChanged();
+	}
+
+	// transient anti-oscillation guard for terrain-following climbs
+	private int autopilotLastClimbTopMinY = Integer.MIN_VALUE;
+	private long autopilotLastClimbPosXZ = Long.MIN_VALUE;
+
+	boolean registerClimbAttempt(final int climbedMinY) {
+		final long posXZ = ((long) pos.getX() << 32) ^ (pos.getZ() & 0xFFFFFFFFL);
+		if (posXZ == autopilotLastClimbPosXZ && climbedMinY <= autopilotLastClimbTopMinY) {
+			return false;
+		}
+		autopilotLastClimbPosXZ = posXZ;
+		autopilotLastClimbTopMinY = climbedMinY;
+		return true;
 	}
 
 	public boolean isNavigationTargetWaypoint() {

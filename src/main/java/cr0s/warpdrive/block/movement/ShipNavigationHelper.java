@@ -41,6 +41,12 @@ public final class ShipNavigationHelper {
 	private static final int PROBE_MAX_WAYPOINTS = 8;
 	private static final long PROBE_MAX_BLOCK_CHECKS_TOTAL = 500_000L;
 	private static final int ASSIST_MAX_RINGS = 2;
+	private static final int CRUISE_CLEARANCE_BLOCKS = 4;
+	private static final int ATMOSPHERIC_CEILING_Y = 250;
+	private static final int PATH_SAMPLE_MAX_POINTS = 64;
+	private static final int PATH_SAMPLE_MAX_CHUNK_LOADS = 8;
+	private static final int WAYPOINT_RETARGET_TOLERANCE = 8;
+	private static final long LANDING_SELF_HEAL_TTL_TICKS = 100L;
 	private static final int ASSIST_MAX_CANDIDATES = 8;
 	private static final long ASSIST_MAX_BLOCK_CHECKS_PER_CANDIDATE = 50_000L;
 	private static final int MAP_VERSION = 2;
@@ -1509,14 +1515,129 @@ public final class ShipNavigationHelper {
 		final int stepDistance = (int) Math.ceil(Math.sqrt(step.getMagnitudeSquared()));
 		final String warningKey = routePreview.wouldBeClamped || stepDistance < remainingDistance
 		                        ? "warpdrive.navigation.route.cruise_split" : "";
-		final ShipMovementPreview stepPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
-		                                                                   step.x, step.y, step.z, (byte) 0);
 		final EnumShipNavigationLegType legType = !routePreview.wouldBeClamped
 		                                          && step.x == movement.x && step.y == movement.y && step.z == movement.z
 		                                        ? EnumShipNavigationLegType.ATMOSPHERIC_LANDING
 		                                        : EnumShipNavigationLegType.ATMOSPHERIC_CRUISE;
+		if (legType == EnumShipNavigationLegType.ATMOSPHERIC_LANDING) {
+			// self-heal terrain drift on the final hop so JumpSequencer's strict landing check
+			// retargets to the freshly resolved altitude instead of aborting the route
+			final CelestialObject celestialObject = CelestialObjectManager.get(shipCore.getWorld(),
+			                                                                   shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ());
+			if (celestialObject != null && !celestialObject.isSpace() && !celestialObject.isHyperspace()) {
+				final LandingProbe freshProbe = getCachedProbeLanding(shipCore,
+				                                                      shipCore.getNavigationWaypointX(), shipCore.getNavigationWaypointZ(),
+				                                                      celestialObject, LANDING_SELF_HEAL_TTL_TICKS, WAYPOINT_MAX_BLOCK_CHECKS);
+				if ( freshProbe.landingCoreY != null
+				  && freshProbe.landingCoreY != shipCore.getNavigationWaypointY()
+				  && Math.abs(freshProbe.landingCoreY - shipCore.getNavigationWaypointY()) <= WAYPOINT_RETARGET_TOLERANCE ) {
+					shipCore.retargetNavigationWaypointY(freshProbe.landingCoreY);
+					return createAtmosphericLeg(shipCore);
+				}
+				if (freshProbe.landingCoreY == null) {
+					return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+					               0, 0, 0, freshProbe.reasonKey, 0, remainingDistance, routePreview);
+				}
+			}
+			final ShipMovementPreview landingPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+			                                                                     step.x, step.y, step.z, (byte) 0);
+			return new Leg(legType,
+			               step.x, step.y, step.z, warningKey, stepDistance, remainingDistance, landingPreview);
+		}
+		// intermediate cruise hop: fly over terrain instead of aborting on it
+		final int obstructionY = sampleTerrainAlongHop(shipCore, stepX, step.y, stepZ);
+		if (obstructionY != Integer.MIN_VALUE) {
+			if (step.y < 0) {
+				// hold altitude over terrain and defer the descent to the final approach
+				final int flatObstructionY = sampleTerrainAlongHop(shipCore, stepX, 0, stepZ);
+				if (flatObstructionY == Integer.MIN_VALUE) {
+					final ShipMovementPreview flatPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+					                                                                  step.x, 0, step.z, (byte) 0);
+					final VectorI flatStep = flatPreview.effectiveMovement;
+					if (flatStep.getMagnitudeSquared() > 0L) {
+						final int flatDistance = (int) Math.ceil(Math.sqrt(flatStep.getMagnitudeSquared()));
+						return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+						               flatStep.x, flatStep.y, flatStep.z,
+						               "warpdrive.navigation.route.terrain_hold_altitude", flatDistance, remainingDistance, flatPreview);
+					}
+				}
+			}
+			final int climb = Math.min(obstructionY + CRUISE_CLEARANCE_BLOCKS + 1 - shipCore.minY,
+			                           ATMOSPHERIC_CEILING_Y - shipCore.maxY);
+			if (climb > 0 && shipCore.registerClimbAttempt(shipCore.minY + climb)) {
+				final ShipMovementPreview climbPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+				                                                                   0, climb, 0, (byte) 0);
+				if (climbPreview.effectiveMovement.y > 0) {
+					final int climbStep = climbPreview.effectiveMovement.y;
+					final ShipMovementPreview climbStepPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+					                                                                       0, climbStep, 0, (byte) 0);
+					return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CLIMB,
+					               0, climbStep, 0,
+					               "warpdrive.navigation.route.terrain_climb", climbStep, remainingDistance, climbStepPreview);
+				}
+			}
+			final Leg detourLeg = createAtmosphericDetourLeg(shipCore, movement);
+			if (detourLeg != null) {
+				return detourLeg;
+			}
+			return new Leg(EnumShipNavigationLegType.ATMOSPHERIC_CRUISE,
+			               0, 0, 0, "warpdrive.navigation.route.terrain_too_high", 0, remainingDistance, routePreview);
+		}
+		final ShipMovementPreview stepPreview = shipCore.previewMovement(EnumShipCommand.MANUAL,
+		                                                                   step.x, step.y, step.z, (byte) 0);
 		return new Leg(legType,
 		               step.x, step.y, step.z, warningKey, stepDistance, remainingDistance, stepPreview);
+	}
+
+	/**
+	 * Coarse heightmap sweep along a planned hop. Returns the highest obstructing terrain Y,
+	 * or {@link Integer#MIN_VALUE} when the path is clear or unknown: ungenerated terrain never
+	 * triggers a climb, the JumpSequencer collision checks remain the safety net there.
+	 */
+	private static int sampleTerrainAlongHop(@Nonnull final TileEntityShipCore shipCore,
+	                                         final int worldMoveX, final int worldMoveY, final int worldMoveZ) {
+		if (worldMoveX == 0 && worldMoveZ == 0) {
+			return Integer.MIN_VALUE;
+		}
+		final double hopLength = Math.sqrt((double) worldMoveX * worldMoveX + (double) worldMoveZ * worldMoveZ);
+		final int samplePoints = (int) Math.min(PATH_SAMPLE_MAX_POINTS, Math.max(2, hopLength / 4.0D));
+		final int halfWidth = (shipCore.maxX - shipCore.minX) / 2;
+		final int halfDepth = (shipCore.maxZ - shipCore.minZ) / 2;
+		final int centerX = (shipCore.minX + shipCore.maxX) / 2;
+		final int centerZ = (shipCore.minZ + shipCore.maxZ) / 2;
+		int chunkLoads = 0;
+		int maxObstructionY = Integer.MIN_VALUE;
+		for (int point = 1; point <= samplePoints; point++) {
+			final double progress = point / (double) samplePoints;
+			final int sampleCenterX = centerX + (int) Math.round(worldMoveX * progress);
+			final int sampleCenterZ = centerZ + (int) Math.round(worldMoveZ * progress);
+			final int expectedMinY = shipCore.minY + (int) Math.floor(worldMoveY * progress);
+			final int[][] columns = {
+				{ sampleCenterX, sampleCenterZ },
+				{ sampleCenterX - halfWidth, sampleCenterZ - halfDepth },
+				{ sampleCenterX + halfWidth, sampleCenterZ - halfDepth },
+				{ sampleCenterX - halfWidth, sampleCenterZ + halfDepth },
+				{ sampleCenterX + halfWidth, sampleCenterZ + halfDepth }
+			};
+			for (final int[] column : columns) {
+				final int chunkX = column[0] >> 4;
+				final int chunkZ = column[1] >> 4;
+				Chunk chunk = shipCore.getWorld().getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+				if (chunk == null) {
+					if ( chunkLoads >= PATH_SAMPLE_MAX_CHUNK_LOADS
+					  || !shipCore.getWorld().isChunkGeneratedAt(chunkX, chunkZ) ) {
+						continue;
+					}
+					chunkLoads++;
+					chunk = shipCore.getWorld().getChunk(chunkX, chunkZ);
+				}
+				final int terrainY = chunk.getHeightValue(column[0] & 15, column[1] & 15);
+				if (terrainY + CRUISE_CLEARANCE_BLOCKS > expectedMinY) {
+					maxObstructionY = Math.max(maxObstructionY, terrainY);
+				}
+			}
+		}
+		return maxObstructionY;
 	}
 
 	@Nullable
