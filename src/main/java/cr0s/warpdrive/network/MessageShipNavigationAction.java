@@ -179,8 +179,8 @@ public class MessageShipNavigationAction implements IMessage, IMessageHandler<Me
 			break;
 
 		case ACTION_PLAN_WAYPOINT:
-			notice = ShipNavigationHelper.setWaypoint(entityPlayerMP, shipCore, message.payload)
-			       ? "warpdrive.navigation.notice.waypoint_plotted" : "warpdrive.navigation.notice.unable_to_plot_waypoint";
+			final String reasonKeyWaypoint = ShipNavigationHelper.setWaypoint(entityPlayerMP, shipCore, message.payload);
+			notice = reasonKeyWaypoint.isEmpty() ? "warpdrive.navigation.notice.waypoint_plotted" : reasonKeyWaypoint;
 			break;
 
 		case ACTION_ENGAGE:

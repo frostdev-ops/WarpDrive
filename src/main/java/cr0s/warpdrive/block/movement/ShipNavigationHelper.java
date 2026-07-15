@@ -15,6 +15,7 @@ import cr0s.warpdrive.WarpDrive;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.util.Arrays;
 
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.entity.player.EntityPlayerMP;
@@ -33,6 +34,7 @@ public final class ShipNavigationHelper {
 	private static final int WAYPOINT_MAX_CHUNKS = 64;
 	private static final long WAYPOINT_MAX_BLOCK_CHECKS = 500_000L;
 	private static final int WAYPOINT_LABEL_MAX_LENGTH = 64;
+	private static final int LANDING_GRID_MAX_SIZE = 16;
 	private static final int MAP_VERSION = 2;
 
 	private ShipNavigationHelper() {
@@ -767,44 +769,58 @@ public final class ShipNavigationHelper {
 		return true;
 	}
 
-	public static boolean setWaypoint(@Nonnull final EntityPlayerMP entityPlayerMP,
-	                                  @Nonnull final TileEntityShipCore shipCore,
-	                                  @Nonnull final NBTTagCompound payload) {
+	// returns an empty string on success, or the localization key of the specific rejection reason
+	@Nonnull
+	public static String setWaypoint(@Nonnull final EntityPlayerMP entityPlayerMP,
+	                                 @Nonnull final TileEntityShipCore shipCore,
+	                                 @Nonnull final NBTTagCompound payload) {
 		if (!shipCore.isCrewMember(entityPlayerMP)) {
-			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.denied"));
-			return false;
+			return chatWaypointRejection(entityPlayerMP, "warpdrive.navigation.denied");
 		}
 		final int dimension = payload.getInteger("dimension");
-		if (dimension != shipCore.getWorld().provider.getDimension()) {
-			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.wrong_dimension"));
-			return false;
-		}
-		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
 		final int waypointX = payload.getInteger("x");
 		final int waypointZ = payload.getInteger("z");
+		final String reasonKeyRegion = validateWaypointRegion(shipCore, dimension, waypointX, waypointZ);
+		if (!reasonKeyRegion.isEmpty()) {
+			return chatWaypointRejection(entityPlayerMP, reasonKeyRegion);
+		}
+		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
+		assert celestialObjectCurrent != null;
+		final LandingProbe landingProbe = probeLanding(shipCore, waypointX, waypointZ, celestialObjectCurrent,
+		                                               WAYPOINT_MAX_BLOCK_CHECKS, false);
+		if (landingProbe.landingCoreY == null) {
+			return chatWaypointRejection(entityPlayerMP, landingProbe.reasonKey);
+		}
+		shipCore.cancelAutopilot();
+		shipCore.setNavigationWaypoint(sanitizeWaypointLabel(payload.getString("name")),
+		                               sanitizeWaypointLabel(payload.getString("source")),
+		                               dimension, waypointX, landingProbe.landingCoreY, waypointZ);
+		return "";
+	}
+
+	@Nonnull
+	private static String chatWaypointRejection(@Nonnull final EntityPlayerMP entityPlayerMP, @Nonnull final String reasonKey) {
+		Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), reasonKey));
+		return reasonKey;
+	}
+
+	// shared cheap validation: dimension, celestial region and chunk generation. Empty string when valid.
+	@Nonnull
+	static String validateWaypointRegion(@Nonnull final TileEntityShipCore shipCore,
+	                                     final int dimension, final int waypointX, final int waypointZ) {
+		if (dimension != shipCore.getWorld().provider.getDimension()) {
+			return "warpdrive.navigation.waypoint.wrong_dimension";
+		}
+		final CelestialObject celestialObjectCurrent = CelestialObjectManager.get(shipCore.getWorld(), shipCore.getPos().getX(), shipCore.getPos().getZ());
 		final CelestialObject celestialObjectTarget = CelestialObjectManager.get(shipCore.getWorld(), waypointX, waypointZ);
 		if ( celestialObjectCurrent == null
 		  || celestialObjectCurrent.isSpace()
 		  || celestialObjectCurrent.isHyperspace()
 		  || celestialObjectTarget == null
 		  || !celestialObjectCurrent.id.equals(celestialObjectTarget.id) ) {
-			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.outside_region"));
-			return false;
+			return "warpdrive.navigation.waypoint.outside_region";
 		}
-		if (!areWaypointChunksGenerated(shipCore, waypointX, waypointZ)) {
-			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.unexplored"));
-			return false;
-		}
-		final Integer landingCoreY = findWaypointLandingY(shipCore, waypointX, waypointZ, celestialObjectCurrent);
-		if (landingCoreY == null) {
-			Commons.addChatMessage(entityPlayerMP, new WarpDriveText(Commons.getStyleWarning(), "warpdrive.navigation.waypoint.no_landing_space"));
-			return false;
-		}
-		shipCore.cancelAutopilot();
-		shipCore.setNavigationWaypoint(sanitizeWaypointLabel(payload.getString("name")),
-		                               sanitizeWaypointLabel(payload.getString("source")),
-		                               dimension, waypointX, landingCoreY, waypointZ);
-		return true;
+		return checkWaypointChunks(shipCore, waypointX, waypointZ);
 	}
 
 	private static String sanitizeWaypointLabel(@Nonnull final String value) {
@@ -812,23 +828,25 @@ public final class ShipNavigationHelper {
 		return sanitized.substring(0, Math.min(WAYPOINT_LABEL_MAX_LENGTH, sanitized.length()));
 	}
 
-	private static boolean areWaypointChunksGenerated(@Nonnull final TileEntityShipCore shipCore,
-	                                                  final int targetCoreX, final int targetCoreZ) {
+	// empty string when the whole footprint is generated, else the specific rejection reason
+	@Nonnull
+	private static String checkWaypointChunks(@Nonnull final TileEntityShipCore shipCore,
+	                                          final int targetCoreX, final int targetCoreZ) {
 		final int minChunkX = targetCoreX + shipCore.minX - shipCore.getPos().getX() >> 4;
 		final int maxChunkX = targetCoreX + shipCore.maxX - shipCore.getPos().getX() >> 4;
 		final int minChunkZ = targetCoreZ + shipCore.minZ - shipCore.getPos().getZ() >> 4;
 		final int maxChunkZ = targetCoreZ + shipCore.maxZ - shipCore.getPos().getZ() >> 4;
 		if ((long) (maxChunkX - minChunkX + 1) * (maxChunkZ - minChunkZ + 1) > WAYPOINT_MAX_CHUNKS) {
-			return false;
+			return "warpdrive.navigation.waypoint.too_large";
 		}
 		for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
 			for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
 				if (!shipCore.getWorld().isChunkGeneratedAt(chunkX, chunkZ)) {
-					return false;
+					return "warpdrive.navigation.waypoint.unexplored";
 				}
 			}
 		}
-		return true;
+		return "";
 	}
 
 	public static boolean isWaypointLandingValid(@Nonnull final TileEntityShipCore shipCore,
@@ -849,6 +867,16 @@ public final class ShipNavigationHelper {
 	private static Integer findWaypointLandingY(@Nonnull final TileEntityShipCore shipCore,
 	                                            final int targetCoreX, final int targetCoreZ,
 	                                            @Nonnull final CelestialObject celestialObject) {
+		return probeLanding(shipCore, targetCoreX, targetCoreZ, celestialObject, WAYPOINT_MAX_BLOCK_CHECKS, false).landingCoreY;
+	}
+
+	// resolves the landing altitude for the ship footprint at the given position,
+	// reporting the specific rejection reason and optionally a downsampled support height grid
+	@Nonnull
+	static LandingProbe probeLanding(@Nonnull final TileEntityShipCore shipCore,
+	                                 final int targetCoreX, final int targetCoreZ,
+	                                 @Nonnull final CelestialObject celestialObject,
+	                                 final long blockBudget, final boolean wantHeightGrid) {
 		final int offsetMinX = shipCore.minX - shipCore.getPos().getX();
 		final int offsetMinY = shipCore.minY - shipCore.getPos().getY();
 		final int offsetMinZ = shipCore.minZ - shipCore.getPos().getZ();
@@ -857,19 +885,35 @@ public final class ShipNavigationHelper {
 		final int offsetMaxZ = shipCore.maxZ - shipCore.getPos().getZ();
 		final int minimumCoreY = 9 - offsetMinY;
 		final int maximumCoreY = 255 - offsetMaxY;
+		final int originX = targetCoreX + offsetMinX;
+		final int originZ = targetCoreZ + offsetMinZ;
+		final int footprintWidth = offsetMaxX - offsetMinX + 1;
+		final int footprintDepth = offsetMaxZ - offsetMinZ + 1;
+		final int gridStride = Math.max(1, (Math.max(footprintWidth, footprintDepth) + LANDING_GRID_MAX_SIZE - 1) / LANDING_GRID_MAX_SIZE);
+		final int gridWidth = (footprintWidth + gridStride - 1) / gridStride;
+		final int gridDepth = (footprintDepth + gridStride - 1) / gridStride;
+		final int[] columnHeights;
+		if (wantHeightGrid) {
+			columnHeights = new int[gridWidth * gridDepth];
+			Arrays.fill(columnHeights, -1);
+		} else {
+			columnHeights = null;
+		}
 		if (minimumCoreY > maximumCoreY) {
-			return null;
+			return LandingProbe.invalid("warpdrive.navigation.waypoint.too_high", Integer.MIN_VALUE, false,
+			                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
 		}
 		final BlockPos.MutableBlockPos mutableBlockPos = new BlockPos.MutableBlockPos();
 		int highestSupportY = Integer.MIN_VALUE;
 		long blockChecks = 0L;
-		for (int x = targetCoreX + offsetMinX; x <= targetCoreX + offsetMaxX; x++) {
-			for (int z = targetCoreZ + offsetMinZ; z <= targetCoreZ + offsetMaxZ; z++) {
+		for (int x = originX; x <= targetCoreX + offsetMaxX; x++) {
+			for (int z = originZ; z <= targetCoreZ + offsetMaxZ; z++) {
 				final Chunk chunk = shipCore.getWorld().getChunk(x >> 4, z >> 4);
 				for (int y = Math.min(255, chunk.getTopFilledSegment() + 15); y >= 0; y--) {
 					blockChecks++;
-					if (blockChecks > WAYPOINT_MAX_BLOCK_CHECKS) {
-						return null;
+					if (blockChecks > blockBudget) {
+						return LandingProbe.invalid("warpdrive.navigation.waypoint.budget_exhausted", highestSupportY, true,
+						                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
 					}
 					if (isSourceShipPosition(shipCore, x, y, z)) {
 						continue;
@@ -877,24 +921,77 @@ public final class ShipNavigationHelper {
 					mutableBlockPos.setPos(x, y, z);
 					if (!shipCore.getWorld().isAirBlock(mutableBlockPos)) {
 						highestSupportY = Math.max(highestSupportY, y);
+						if (columnHeights != null) {
+							final int indexGrid = ((z - originZ) / gridStride) * gridWidth + (x - originX) / gridStride;
+							columnHeights[indexGrid] = Math.max(columnHeights[indexGrid], y);
+						}
 						break;
 					}
 				}
 			}
 		}
 		if (highestSupportY == Integer.MIN_VALUE) {
-			return null;
+			return LandingProbe.invalid("warpdrive.navigation.waypoint.no_support", highestSupportY, false,
+			                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
 		}
 		final int candidateCoreY = Math.max(minimumCoreY, highestSupportY + 1 - offsetMinY);
 		final int targetMinY = candidateCoreY + offsetMinY;
 		final int targetMaxY = candidateCoreY + offsetMaxY;
-		if (candidateCoreY > maximumCoreY || targetMinY != highestSupportY + 1) {
-			return null;
+		if (candidateCoreY > maximumCoreY) {
+			return LandingProbe.invalid("warpdrive.navigation.waypoint.too_high", highestSupportY, false,
+			                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
+		}
+		if (targetMinY != highestSupportY + 1) {
+			return LandingProbe.invalid("warpdrive.navigation.waypoint.too_low", highestSupportY, false,
+			                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
 		}
 		final AxisAlignedBB targetBounds = new AxisAlignedBB(
 				targetCoreX + offsetMinX, targetMinY, targetCoreZ + offsetMinZ,
 				targetCoreX + offsetMaxX + 1, targetMaxY + 1, targetCoreZ + offsetMaxZ + 1);
-		return celestialObject.isInsideBorder(targetBounds) ? candidateCoreY : null;
+		if (!celestialObject.isInsideBorder(targetBounds)) {
+			return LandingProbe.invalid("warpdrive.navigation.waypoint.outside_border", highestSupportY, false,
+			                            columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
+		}
+		return new LandingProbe(candidateCoreY, "", highestSupportY, false,
+		                        columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
+	}
+
+	static final class LandingProbe {
+
+		@Nullable final Integer landingCoreY;
+		@Nonnull final String reasonKey;
+		final int highestSupportY;
+		final boolean budgetExhausted;
+		@Nullable final int[] columnHeights;
+		final int gridWidth;
+		final int gridDepth;
+		final int gridStride;
+		final int originX;
+		final int originZ;
+
+		LandingProbe(@Nullable final Integer landingCoreY, @Nonnull final String reasonKey,
+		             final int highestSupportY, final boolean budgetExhausted,
+		             @Nullable final int[] columnHeights, final int gridWidth, final int gridDepth,
+		             final int gridStride, final int originX, final int originZ) {
+			this.landingCoreY = landingCoreY;
+			this.reasonKey = reasonKey;
+			this.highestSupportY = highestSupportY;
+			this.budgetExhausted = budgetExhausted;
+			this.columnHeights = columnHeights;
+			this.gridWidth = gridWidth;
+			this.gridDepth = gridDepth;
+			this.gridStride = gridStride;
+			this.originX = originX;
+			this.originZ = originZ;
+		}
+
+		@Nonnull
+		static LandingProbe invalid(@Nonnull final String reasonKey, final int highestSupportY, final boolean budgetExhausted,
+		                            @Nullable final int[] columnHeights, final int gridWidth, final int gridDepth,
+		                            final int gridStride, final int originX, final int originZ) {
+			return new LandingProbe(null, reasonKey, highestSupportY, budgetExhausted,
+			                        columnHeights, gridWidth, gridDepth, gridStride, originX, originZ);
+		}
 	}
 
 	private static boolean isSourceShipPosition(@Nonnull final TileEntityShipCore shipCore,
