@@ -136,6 +136,23 @@ public class GuiShipNavigation extends GuiScreen {
 	private String routeBlockerKey = "";
 	private int routeEffectiveDistance;
 	private int routeMaximumDistance;
+	private int routeProgressPermille = -1;
+	private int routeRemainingDistance;
+	private boolean hasRouteEstimate;
+	private int routeEstimateLegs;
+	private long routeEstimateEnergy;
+	private int routeEstimateEta;
+	private boolean hasWaypointLanding;
+	private boolean waypointLandingValid;
+	private String waypointLandingReasonKey = "";
+	private int waypointLandingY;
+	private int waypointLandingHighestSupportY;
+	private int landingGridOriginX;
+	private int landingGridOriginZ;
+	private int landingGridStride;
+	private int landingGridWidth;
+	private int landingGridDepth;
+	private int[] landingGridHeights;
 	private String notice = "";
 	private boolean allowed;
 	private boolean canEngage;
@@ -352,6 +369,40 @@ public class GuiShipNavigation extends GuiScreen {
 		for (int index = 0; index < tagListLegs.tagCount(); index++) {
 			routeLegs.add(new RouteLeg(tagListLegs.getCompoundTagAt(index)));
 		}
+		// waypoint route telemetry (absent on older servers)
+		routeProgressPermille = route.hasKey("progressPermille") ? route.getInteger("progressPermille") : -1;
+		routeRemainingDistance = route.getInteger("remainingDistance");
+		hasRouteEstimate = route.hasKey("estimate");
+		if (hasRouteEstimate) {
+			final NBTTagCompound estimate = route.getCompoundTag("estimate");
+			routeEstimateLegs = estimate.getInteger("legs");
+			routeEstimateEnergy = estimate.getLong("energy");
+			routeEstimateEta = estimate.getInteger("eta");
+		}
+		hasWaypointLanding = this.snapshot.hasKey("waypointLanding");
+		if (hasWaypointLanding) {
+			final NBTTagCompound landing = this.snapshot.getCompoundTag("waypointLanding");
+			waypointLandingValid = landing.getBoolean("valid");
+			waypointLandingReasonKey = landing.getString("reasonKey");
+			waypointLandingY = landing.getInteger("landingY");
+			waypointLandingHighestSupportY = landing.getInteger("highestSupportY");
+			if (landing.hasKey("heights")) {
+				landingGridOriginX = landing.getInteger("originX");
+				landingGridOriginZ = landing.getInteger("originZ");
+				landingGridStride = Math.max(1, landing.getInteger("stride"));
+				landingGridWidth = landing.getInteger("gridWidth");
+				landingGridDepth = landing.getInteger("gridDepth");
+				landingGridHeights = landing.getIntArray("heights");
+			} else {
+				landingGridHeights = null;
+			}
+		} else {
+			waypointLandingReasonKey = "";
+			landingGridHeights = null;
+		}
+		if (this.snapshot.hasKey("waypointProbe")) {
+			applyWaypointProbeResults(this.snapshot.getTagList("waypointProbe", NBT.TAG_COMPOUND));
+		}
 
 		destinations.clear();
 		final NBTTagList tagListDestinations = this.snapshot.getTagList("destinations", NBT.TAG_COMPOUND);
@@ -440,6 +491,59 @@ public class GuiShipNavigation extends GuiScreen {
 		waypoints.clear();
 		waypoints.addAll(WaypointCache.get(dimensionId));
 		rebuildWaypointRows();
+		probeWaypoints();
+	}
+
+	// batch-survey waypoints without committing anything; the server replies inside the next snapshot
+	private void probeWaypoints() {
+		if (!allowed || waypoints.isEmpty()) {
+			return;
+		}
+		final NBTTagList tagListWaypoints = new NBTTagList();
+		final long now = System.currentTimeMillis();
+		for (final MapWaypoint waypoint : waypoints) {
+			final WaypointStatus status = WaypointCache.getStatus(waypoint);
+			if ( status != null
+			  && ( status.state == WaypointStatus.State.PENDING && now - status.updatedAtMs < 10_000L
+			    || status.state != WaypointStatus.State.PENDING && now - status.updatedAtMs < 30_000L ) ) {
+				continue;
+			}
+			final NBTTagCompound tagWaypoint = new NBTTagCompound();
+			tagWaypoint.setInteger("dimension", dimensionId);
+			tagWaypoint.setInteger("x", waypoint.x);
+			tagWaypoint.setInteger("z", waypoint.z);
+			tagListWaypoints.appendTag(tagWaypoint);
+			WaypointCache.setStatus(WaypointCache.key(waypoint), new WaypointStatus(WaypointStatus.State.PENDING, "", 0));
+			if (tagListWaypoints.tagCount() >= 8) {
+				break;
+			}
+		}
+		if (tagListWaypoints.tagCount() == 0) {
+			return;
+		}
+		final NBTTagCompound payload = new NBTTagCompound();
+		payload.setTag("waypoints", tagListWaypoints);
+		payload.setBoolean("assist", false);
+		PacketHandler.sendShipNavigationAction(MessageShipNavigationAction.ACTION_PROBE_WAYPOINT,
+		                                       dimensionId, blockPosCore, blockPosAccess, payload);
+	}
+
+	private void applyWaypointProbeResults(final NBTTagList tagListResults) {
+		for (int index = 0; index < tagListResults.tagCount(); index++) {
+			final NBTTagCompound tagResult = tagListResults.getCompoundTagAt(index);
+			if (tagResult.getInteger("dimension") != dimensionId) {
+				continue;
+			}
+			final boolean valid = tagResult.getBoolean("valid");
+			final WaypointStatus status = new WaypointStatus(valid ? WaypointStatus.State.REACHABLE : WaypointStatus.State.REJECTED,
+			                                                 tagResult.getString("reasonKey"),
+			                                                 tagResult.getInteger("landingY"));
+			for (final MapWaypoint waypoint : waypoints) {
+				if (waypoint.x == tagResult.getInteger("x") && waypoint.z == tagResult.getInteger("z")) {
+					WaypointCache.setStatus(WaypointCache.key(waypoint), status);
+				}
+			}
+		}
 	}
 
 	private void rebuildDestinationRows() {
@@ -1028,6 +1132,7 @@ public class GuiShipNavigation extends GuiScreen {
 		waypoints.addAll(WaypointCache.get(dimensionId));
 		waypointsScroll = 0;
 		rebuildWaypointRows();
+		probeWaypoints();
 	}
 
 	// one shared row model (source headers + waypoints) drives both drawing and hit-testing
@@ -1658,6 +1763,15 @@ public class GuiShipNavigation extends GuiScreen {
 			final int targetScreenY = toSurfaceScreenY(targetWaypointZ);
 			drawLine(shipScreenX, shipScreenY, targetScreenX, targetScreenY, 0xAA2DD4FF);
 			drawDiamond(targetScreenX, targetScreenY, 6.0F + (float) (1.5D * Math.sin(time / 220.0D)), 0x88F5C542);
+			drawLandingFootprint();
+			// the next hop as flown, which diverges from the direct line on detours and climbs
+			final RouteLeg activeLeg = routeLegs.isEmpty() || routeLegs.get(0).preview ? null : routeLegs.get(0);
+			if (activeLeg != null && (activeLeg.worldMoveX != 0 || activeLeg.worldMoveZ != 0)) {
+				drawLine(shipScreenX, shipScreenY,
+				         toSurfaceScreenX(blockPosCore.getX() + activeLeg.worldMoveX),
+				         toSurfaceScreenY(blockPosCore.getZ() + activeLeg.worldMoveZ),
+				         activeLeg.detour ? 0xCCF5C542 : 0x668DFFB4);
+			}
 		}
 
 		final ArrayList<LabelBounds> occupiedLabels = new ArrayList<>();
@@ -1667,6 +1781,12 @@ public class GuiShipNavigation extends GuiScreen {
 			final int y = toSurfaceScreenY(waypoint.z);
 			if (x < mapX + 4 || x > mapX + mapWidth - 4 || y < mapY + 22 || y > mapY + mapHeight - 6) {
 				continue;
+			}
+			final WaypointStatus status = WaypointCache.getStatus(waypoint);
+			if (status != null && status.state == WaypointStatus.State.REACHABLE) {
+				drawCircleOutline(x, y, 6.0F, 0xAA8DFFB4, 24);
+			} else if (status != null && status.state == WaypointStatus.State.REJECTED) {
+				drawCircleOutline(x, y, 6.0F, 0xAAFF8A75, 24);
 			}
 			drawDiamond(x, y, 4.0F, sourceColor(waypoint.source));
 			if (surfaceZoom >= 0.5D) {
@@ -1696,7 +1816,46 @@ public class GuiShipNavigation extends GuiScreen {
 			tooltip.add("X " + Commons.format(hoveredWaypoint.x) + "  Y " + Commons.format(hoveredWaypoint.y)
 			          + "  Z " + Commons.format(hoveredWaypoint.z));
 			tooltip.add(bearingText(hoveredWaypoint.x, hoveredWaypoint.z));
+			final WaypointStatus status = WaypointCache.getStatus(hoveredWaypoint);
+			if (status != null && status.state == WaypointStatus.State.REACHABLE) {
+				tooltip.add(I18n.format("warpdrive.navigation.gui.landing_at",
+				                        Commons.format(status.landingY), "?"));
+			} else if (status != null && status.state == WaypointStatus.State.REJECTED && !status.reasonKey.isEmpty()) {
+				tooltip.add(I18n.format(status.reasonKey));
+			}
 			drawHoveringText(tooltip, mouseX, mouseY);
+		}
+	}
+
+	// footprint clearance overlay at the planned landing site: highlights the columns that set the landing altitude
+	private void drawLandingFootprint() {
+		if ( !hasWaypointLanding
+		  || landingGridHeights == null
+		  || landingGridWidth <= 0
+		  || landingGridDepth <= 0 ) {
+			return;
+		}
+		for (int gridZ = 0; gridZ < landingGridDepth; gridZ++) {
+			for (int gridX = 0; gridX < landingGridWidth; gridX++) {
+				final int height = landingGridHeights[gridZ * landingGridWidth + gridX];
+				if (height < 0) {
+					continue;
+				}
+				final int left = toSurfaceScreenX(landingGridOriginX + gridX * landingGridStride);
+				final int top = toSurfaceScreenY(landingGridOriginZ + gridZ * landingGridStride);
+				final int right = toSurfaceScreenX(landingGridOriginX + (gridX + 1) * landingGridStride);
+				final int bottom = toSurfaceScreenY(landingGridOriginZ + (gridZ + 1) * landingGridStride);
+				if (right < mapX + 2 || left > mapX + mapWidth - 2 || bottom < mapY + 22 || top > mapY + mapHeight - 4) {
+					continue;
+				}
+				final boolean isSupportColumn = height == waypointLandingHighestSupportY;
+				final int color = waypointLandingValid
+				                ? (isSupportColumn ? 0x668DFFB4 : 0x338DFFB4)
+				                : (isSupportColumn ? 0x66FF8A75 : 0x33FF8A75);
+				drawRect(Math.max(mapX + 2, left), Math.max(mapY + 22, top),
+				         Math.min(mapX + mapWidth - 2, Math.max(left + 1, right)),
+				         Math.min(mapY + mapHeight - 4, Math.max(top + 1, bottom)), color);
+			}
 		}
 	}
 
@@ -1973,6 +2132,26 @@ public class GuiShipNavigation extends GuiScreen {
 		y += 12;
 		fontRenderer.drawString(trimToWidth(routeSummaryText(), panelWidth - 20), panelX + 10, y, COLOR_TEXT);
 		y += 12;
+		if (routeProgressPermille >= 0 && targetIsWaypoint) {
+			drawBar(panelX + 10, y, panelWidth - 20, 10, routeProgressPermille / 1000.0D, COLOR_CYAN,
+			        I18n.format("warpdrive.navigation.gui.route_progress",
+			                    routeProgressPermille / 10, Commons.format(routeRemainingDistance)));
+			y += 14;
+		}
+		if (hasRouteEstimate && targetIsWaypoint) {
+			fontRenderer.drawString(trimToWidth(I18n.format("warpdrive.navigation.gui.route_totals",
+			                                                routeEstimateLegs, Commons.format(routeEstimateEnergy), routeEstimateEta),
+			                                    panelWidth - 20),
+			                        panelX + 10, y, COLOR_TEXT_DIM);
+			y += 12;
+		}
+		if (hasWaypointLanding && waypointLandingValid) {
+			fontRenderer.drawString(trimToWidth(I18n.format("warpdrive.navigation.gui.landing_at",
+			                                                Commons.format(waypointLandingY), Commons.format(waypointLandingHighestSupportY)),
+			                                    panelWidth - 20),
+			                        panelX + 10, y, COLOR_OK);
+			y += 12;
+		}
 		final String warning = routeWarningText();
 		if (!warning.isEmpty()) {
 			for (final String line : fontRenderer.listFormattedStringToWidth(warning, panelWidth - 20)) {
@@ -1988,7 +2167,8 @@ public class GuiShipNavigation extends GuiScreen {
 			}
 			final int legHeight = !routeLeg.preview && routeLeg.maximumDistance > 0 ? 32 : 22;
 			drawRect(panelX + 9, y - 2, panelX + panelWidth - 9, y + legHeight, routeLeg.preview ? 0x44212936 : 0x6630475B);
-			fontRenderer.drawString(trimToWidth(legIndex + ". " + routeLeg.title(), panelWidth - 92), panelX + 15, y, routeLeg.preview ? 0xFF91A4B8 : 0xFFFFFFFF);
+			final String legPrefix = !routeLeg.preview && legIndex == 1 && isAutopilotActive() ? "> " : "";
+			fontRenderer.drawString(trimToWidth(legPrefix + legIndex + ". " + routeLeg.title(), panelWidth - 92), panelX + 15, y, routeLeg.preview ? 0xFF91A4B8 : 0xFFFFFFFF);
 			if (routeLeg.requiresConfirmation) {
 				fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.confirm_tag"), panelX + panelWidth - 70, y, COLOR_AMBER);
 			}
@@ -2225,6 +2405,9 @@ public class GuiShipNavigation extends GuiScreen {
 		}
 		if (!routeBlockerKey.isEmpty()) {
 			return I18n.format(routeBlockerKey);
+		}
+		if (hasWaypointLanding && !waypointLandingValid && !waypointLandingReasonKey.isEmpty()) {
+			return I18n.format(waypointLandingReasonKey);
 		}
 		return "";
 	}
@@ -2628,6 +2811,10 @@ public class GuiShipNavigation extends GuiScreen {
 		private final int effectiveDistance;
 		private final int maximumDistance;
 		private final int energyRequired;
+		private final boolean detour;
+		private final int worldMoveX;
+		private final int worldMoveY;
+		private final int worldMoveZ;
 
 		private RouteLeg(final NBTTagCompound tagCompound) {
 			type = EnumShipNavigationLegType.get(tagCompound.getString("type"));
@@ -2639,6 +2826,10 @@ public class GuiShipNavigation extends GuiScreen {
 			effectiveDistance = tagCompound.getInteger("effectiveDistance");
 			maximumDistance = tagCompound.getInteger("maximumDistance");
 			energyRequired = tagCompound.getInteger("energyRequired");
+			detour = tagCompound.getBoolean("detour");
+			worldMoveX = tagCompound.getInteger("worldMoveX");
+			worldMoveY = tagCompound.getInteger("worldMoveY");
+			worldMoveZ = tagCompound.getInteger("worldMoveZ");
 		}
 
 		private String title() {
