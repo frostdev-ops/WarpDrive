@@ -869,7 +869,7 @@ public class WarpDriveConfig {
 				           "Number of blocks to move per ticks, too high will cause lag spikes on ship jumping or deployment, too low may break the ship wirings").getInt());
 		G_CHUNKS_PER_TICK = Commons.clamp(1, 1000,
 				config.get("general", "chunks_per_tick", G_CHUNKS_PER_TICK,
-				           "Number of source/target chunks to load per tick during ship jumps. Higher values make pregenerated jumps faster; lower values reduce watchdog risk in ungenerated modded terrain.").getInt());
+				           "Number of target chunks to load or generate per tick before a ship jump, too high will cause lag spikes or watchdog kills when jumping to ungenerated areas, too low will delay the jump").getInt());
 		G_ENABLE_FAST_SET_BLOCKSTATE = config.get("general", "enable_fast_set_blockstate", G_ENABLE_FAST_SET_BLOCKSTATE,
 		                                          "Enable fast blockstate placement, skipping light computation. Disable if you have world implementations conflicts").getBoolean(G_ENABLE_FAST_SET_BLOCKSTATE);
 		G_ENABLE_PROTECTION_CHECKS = config.get("general", "enable_protection_checks", G_ENABLE_PROTECTION_CHECKS,

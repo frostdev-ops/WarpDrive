@@ -56,9 +56,6 @@ import net.minecraft.util.math.BlockPos.MutableBlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
-import net.minecraft.world.WorldServer;
-import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.gen.ChunkProviderServer;
 
 import net.minecraftforge.common.ForgeChunkManager;
 import net.minecraftforge.common.ForgeChunkManager.Ticket;
@@ -94,12 +91,8 @@ public class JumpSequencer extends AbstractSequencer {
 	private Ticket ticketSourcePosition;
 	private GlobalRegion globalRegionLock;
 	protected World worldTarget;
+	private Ticket ticketTargetAnchor;
 	private Ticket ticketTargetPosition;
-	private ArrayList<ChunkPos> chunksSourceToForce;
-	private int chunkSourceForceIndex = 0;
-	private int chunkSourceReleaseIndex = 0;
-	private ArrayList<ChunkPos> chunksTargetToForce;
-	private int chunkTargetForceIndex = 0;
 	
 	private boolean collisionDetected = false;
 	private ArrayList<Vector3> collisionAtSource;
@@ -113,18 +106,14 @@ public class JumpSequencer extends AbstractSequencer {
 	protected final JumpShip ship;
 	private boolean betweenWorlds;
 	private boolean isPluginCheckDone = false;
-	private boolean isFinalTargetCheckDone = false;
+	private boolean isJumpDistanceCheckPending = false;
+	private ArrayList<ChunkPos> chunksToPreload;
+	private int indexPreloadChunk = 0;
 	private WarpDriveText firstAdjustmentReason = null;
 	
 	private long msCounter = 0;
 	private int ticks = 0;
-
-	private enum ChunkLoadingResult {
-		FAILED,
-		IN_PROGRESS,
-		DONE
-	}
-
+	
 	public JumpSequencer(@Nonnull final TileEntityShipCore shipCore, final EnumShipMovementType shipMovementType, final String nameTarget,
 	                     final int moveX, final int moveY, final int moveZ, final byte rotationSteps,
 	                     final int destX, final int destY, final int destZ) {
@@ -329,10 +318,11 @@ public class JumpSequencer extends AbstractSequencer {
 			break;
 			
 		case LOAD_SOURCE_CHUNKS:
-			if (state_chunkLoadingSource() && isEnabled) {
-				if (ship.shipCore != null) {
-					globalRegionLock = addLock(ship.shipCore);
-				}
+			state_chunkLoadingSource();
+			if (ship.shipCore != null) {
+				globalRegionLock = addLock(ship.shipCore);
+			}
+			if (isEnabled) {
 				actualIndexInShip = 0;
 				enumJumpSequencerState = EnumJumpSequencerState.SAVE_TO_MEMORY;
 			}
@@ -363,18 +353,26 @@ public class JumpSequencer extends AbstractSequencer {
 		case GET_INITIAL_VECTOR:
 			state_getInitialVector();
 			if (isEnabled) {
+				enumJumpSequencerState = EnumJumpSequencerState.PRELOAD_TARGET_CHUNKS;
+			}
+			break;
+
+		case PRELOAD_TARGET_CHUNKS:
+			if (state_preloadTargetChunks() && isEnabled) {
 				enumJumpSequencerState = EnumJumpSequencerState.ADJUST_JUMP_VECTOR;
 			}
 			break;
-			
+
 		case ADJUST_JUMP_VECTOR:
-			if (state_adjustJumpVector() && isEnabled) {
+			state_adjustJumpVector();
+			if (isEnabled) {
 				enumJumpSequencerState = EnumJumpSequencerState.LOAD_TARGET_CHUNKS;
 			}
 			break;
-			
+
 		case LOAD_TARGET_CHUNKS:
-			if (state_loadTargetChunks() && isEnabled) {
+			state_loadTargetChunks();
+			if (isEnabled) {
 				enumJumpSequencerState = EnumJumpSequencerState.SAVE_ENTITIES;
 			}
 			break;
@@ -420,9 +418,8 @@ public class JumpSequencer extends AbstractSequencer {
 			break;
 			
 		case CHUNK_UNLOADING:
-			if (state_chunkReleasing()) {
-				enumJumpSequencerState = EnumJumpSequencerState.FINISHING;
-			}
+			state_chunkReleasing();
+			enumJumpSequencerState = EnumJumpSequencerState.FINISHING;
 			break;
 			
 		case FINISHING:
@@ -437,224 +434,151 @@ public class JumpSequencer extends AbstractSequencer {
 		return true;
 	}
 	
-	private ArrayList<ChunkPos> getSortedChunks(final int minX, final int maxX, final int minZ, final int maxZ,
-	                                            final int anchorX, final int anchorZ) {
-		final ArrayList<ChunkPos> chunks = new ArrayList<>((maxX - minX + 1) * (maxZ - minZ + 1));
-		for (int x = minX; x <= maxX; x++) {
-			for (int z = minZ; z <= maxZ; z++) {
-				chunks.add(new ChunkPos(x, z));
-			}
-		}
-		chunks.sort(Comparator.comparingInt(chunkPos -> {
-			final int deltaX = chunkPos.x - anchorX;
-			final int deltaZ = chunkPos.z - anchorZ;
-			return deltaX * deltaX + deltaZ * deltaZ;
-		}));
-		return chunks;
-	}
-
-	private int forceChunkBatch(final Ticket ticket, final ArrayList<ChunkPos> chunks, final int chunkIndexStart) {
-		final int chunkIndexEnd = Math.min(chunks.size(), chunkIndexStart + WarpDriveConfig.G_CHUNKS_PER_TICK);
-		for (int chunkIndex = chunkIndexStart; chunkIndex < chunkIndexEnd; chunkIndex++) {
-			ForgeChunkManager.forceChunk(ticket, chunks.get(chunkIndex));
-		}
-		return chunkIndexEnd;
-	}
-
-	private int releaseChunkBatch(final World world, final Ticket ticket, final ArrayList<ChunkPos> chunks,
-	                              final int chunkIndexStart, final int chunkIndexLimit) {
-		final int chunkIndexEnd = Math.min(chunkIndexLimit, chunkIndexStart + WarpDriveConfig.G_CHUNKS_PER_TICK);
-		for (int chunkIndex = chunkIndexStart; chunkIndex < chunkIndexEnd; chunkIndex++) {
-			final ChunkPos chunkPos = chunks.get(chunkIndex);
-			generateSkylightMapIfLoaded(world, chunkPos);
-			ForgeChunkManager.unforceChunk(ticket, chunkPos);
-		}
-		return chunkIndexEnd;
-	}
-
-	private void generateSkylightMapIfLoaded(final World world, final ChunkPos chunkPos) {
-		if (!(world instanceof WorldServer)) {
-			return;
-		}
-		final ChunkProviderServer chunkProviderServer = ((WorldServer) world).getChunkProvider();
-		final Chunk chunk = chunkProviderServer.getLoadedChunk(chunkPos.x, chunkPos.z);
-		if (chunk != null) {
-			chunk.generateSkylightMap();
-		}
-	}
-
-	private ChunkLoadingResult forceSourceChunks(final WarpDriveText reason) {
+	private boolean forceSourceChunks(final WarpDriveText reason) {
 		if (WarpDriveConfig.LOGGING_JUMP) {
 			WarpDrive.logger.info(String.format("%s Forcing source chunks in %s",
 			                                    this, Commons.format(worldSource)));
 		}
+		ticketSourcePosition = ForgeChunkManager.requestTicket(WarpDrive.instance, worldSource, Type.NORMAL);
 		if (ticketSourcePosition == null) {
-			ticketSourcePosition = ForgeChunkManager.requestTicket(WarpDrive.instance, worldSource, Type.NORMAL);
-			if (ticketSourcePosition == null) {
-				reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.chunkloading_rejected_in_source_world",
-				              Commons.format(worldSource));
-				return ChunkLoadingResult.FAILED;
+			reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.chunkloading_rejected_in_source_world",
+			              Commons.format(worldSource));
+			return false;
+		}
+		
+		final int minX = ship.minX >> 4;
+		final int maxX = ship.maxX >> 4;
+		final int minZ = ship.minZ >> 4;
+		final int maxZ = ship.maxZ >> 4;
+		int chunkCount = 0;
+		for (int x = minX; x <= maxX; x++) {
+			for (int z = minZ; z <= maxZ; z++) {
+				chunkCount++;
+				if (chunkCount > ticketSourcePosition.getMaxChunkListDepth()) {
+					reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.too_many_chunks_to_load",
+					              (maxX - minX + 1) * (maxZ - minZ + 1),
+					              ticketSourcePosition.getMaxChunkListDepth());
+					reason.append(Commons.getStyleCommand(), "warpdrive.ship.guide.max_chunkloading");
+					return false;
+				}
+				ForgeChunkManager.forceChunk(ticketSourcePosition, new ChunkPos(x, z));
 			}
 		}
-
-		if (chunksSourceToForce == null) {
-			final int minX = ship.minX >> 4;
-			final int maxX = ship.maxX >> 4;
-			final int minZ = ship.minZ >> 4;
-			final int maxZ = ship.maxZ >> 4;
-			chunksSourceToForce = getSortedChunks(minX, maxX, minZ, maxZ, ship.core.getX() >> 4, ship.core.getZ() >> 4);
-			if (chunksSourceToForce.size() > ticketSourcePosition.getMaxChunkListDepth()) {
-				reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.too_many_chunks_to_load",
-				              chunksSourceToForce.size(),
-				              ticketSourcePosition.getMaxChunkListDepth());
-				reason.append(Commons.getStyleCommand(), "warpdrive.ship.guide.max_chunkloading");
-				return ChunkLoadingResult.FAILED;
-			}
-		}
-
-		chunkSourceForceIndex = forceChunkBatch(ticketSourcePosition, chunksSourceToForce, chunkSourceForceIndex);
-		return chunkSourceForceIndex >= chunksSourceToForce.size() ? ChunkLoadingResult.DONE : ChunkLoadingResult.IN_PROGRESS;
+		return true;
 	}
-
-	private ChunkLoadingResult forceTargetChunks(final WarpDriveText reason) {
+	
+	private boolean forceTargetAnchor(final WarpDriveText reason) {
+		LocalProfiler.start("Jump.forceTargetAnchor");
+		if (WarpDriveConfig.LOGGING_JUMP) {
+			WarpDrive.logger.info(String.format("%s Forcing target world %s",
+			                                    this, Commons.format(worldTarget)));
+		}
+		ticketTargetAnchor = ForgeChunkManager.requestTicket(WarpDrive.instance, worldTarget, Type.NORMAL);
+		if (ticketTargetAnchor == null) {
+			reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.chunkloading_rejected_in_target_world",
+			              Commons.format(worldTarget));
+			return false;
+		}
+		
+		ForgeChunkManager.forceChunk(ticketTargetAnchor, new ChunkPos(0, 0));
+		LocalProfiler.stop();
+		return true;
+	}
+	
+	private boolean forceTargetChunks(final WarpDriveText reason) {
 		LocalProfiler.start("Jump.forceTargetChunks");
 		if (WarpDriveConfig.LOGGING_JUMP) {
 			WarpDrive.logger.info(String.format("%s Forcing target chunks in %s",
 			                                    this, Commons.format(worldTarget)));
 		}
-		if (chunksTargetToForce == null) {
-			final BlockPos targetMin = transformation.apply(ship.minX, ship.minY, ship.minZ);
-			final BlockPos targetMax = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
-			int minBlockX = Math.min(targetMin.getX(), targetMax.getX());
-			int maxBlockX = Math.max(targetMin.getX(), targetMax.getX());
-			int minBlockZ = Math.min(targetMin.getZ(), targetMax.getZ());
-			int maxBlockZ = Math.max(targetMin.getZ(), targetMax.getZ());
-			final int minX = minBlockX >> 4;
-			final int maxX = maxBlockX >> 4;
-			final int minZ = minBlockZ >> 4;
-			final int maxZ = maxBlockZ >> 4;
-			final BlockPos targetCore = transformation.apply(ship.core);
-			chunksTargetToForce = getSortedChunks(minX, maxX, minZ, maxZ, targetCore.getX() >> 4, targetCore.getZ() >> 4);
-		}
-
+		ticketTargetPosition = ForgeChunkManager.requestTicket(WarpDrive.instance, worldTarget, Type.NORMAL);
 		if (ticketTargetPosition == null) {
-			ticketTargetPosition = ForgeChunkManager.requestTicket(WarpDrive.instance, worldTarget, Type.NORMAL);
-			if (ticketTargetPosition == null) {
-				reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.chunkloading_rejected_in_target_world",
-				              Commons.format(worldTarget));
-				LocalProfiler.stop();
-				return ChunkLoadingResult.FAILED;
-			}
-			if (chunksTargetToForce.size() > ticketTargetPosition.getMaxChunkListDepth()) {
-				reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.too_many_chunks_to_load",
-				              chunksTargetToForce.size(),
-				              ticketTargetPosition.getMaxChunkListDepth());
-				reason.append(Commons.getStyleCommand(), "warpdrive.ship.guide.max_chunkloading");
-				ForgeChunkManager.releaseTicket(ticketTargetPosition);
-				ticketTargetPosition = null;
-				chunksTargetToForce = null;
-				LocalProfiler.stop();
-				return ChunkLoadingResult.FAILED;
+			reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.chunkloading_rejected_in_target_world",
+			              Commons.format(worldTarget));
+			return false;
+		}
+		
+		final BlockPos targetMin = transformation.apply(ship.minX, ship.minY, ship.minZ);
+		final BlockPos targetMax = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
+		final int minX = Math.min(targetMin.getX(), targetMax.getX()) >> 4;
+		final int maxX = Math.max(targetMin.getX(), targetMax.getX()) >> 4;
+		final int minZ = Math.min(targetMin.getZ(), targetMax.getZ()) >> 4;
+		final int maxZ = Math.max(targetMin.getZ(), targetMax.getZ()) >> 4;
+		int chunkCount = 0;
+		for (int x = minX; x <= maxX; x++) {
+			for (int z = minZ; z <= maxZ; z++) {
+				chunkCount++;
+				if (chunkCount > ticketTargetPosition.getMaxChunkListDepth()) {
+					reason.append(Commons.getStyleWarning(), "warpdrive.ship.guide.too_many_chunks_to_load",
+					              (maxX - minX + 1) * (maxZ - minZ + 1),
+					              ticketTargetPosition.getMaxChunkListDepth());
+					reason.append(Commons.getStyleCommand(), "warpdrive.ship.guide.max_chunkloading");
+					return false;
+				}
+				ForgeChunkManager.forceChunk(ticketTargetPosition, new ChunkPos(x, z));
 			}
 		}
-
-		chunkTargetForceIndex = forceChunkBatch(ticketTargetPosition, chunksTargetToForce, chunkTargetForceIndex);
 		LocalProfiler.stop();
-		return chunkTargetForceIndex >= chunksTargetToForce.size() && areTargetChunksLoaded()
-		     ? ChunkLoadingResult.DONE
-		     : ChunkLoadingResult.IN_PROGRESS;
+		return true;
 	}
-
+	
 	private void releaseChunks() {
 		if (WarpDriveConfig.LOGGING_JUMP) {
 			WarpDrive.logger.info(this + " Releasing chunks");
 		}
-
+		
+		int minX, maxX, minZ, maxZ;
 		if (ticketSourcePosition != null) {
-			if (chunksSourceToForce == null) {
-				chunksSourceToForce = getSortedChunks(ship.minX >> 4, ship.maxX >> 4, ship.minZ >> 4, ship.maxZ >> 4,
-				                                      ship.core.getX() >> 4, ship.core.getZ() >> 4);
-			}
-			for (int chunkIndex = 0; chunkIndex < chunkSourceForceIndex && chunkIndex < chunksSourceToForce.size(); chunkIndex++) {
-				final ChunkPos chunkPos = chunksSourceToForce.get(chunkIndex);
-				generateSkylightMapIfLoaded(worldSource, chunkPos);
-				ForgeChunkManager.unforceChunk(ticketSourcePosition, chunkPos);
+			minX = ship.minX >> 4;
+			maxX = ship.maxX >> 4;
+			minZ = ship.minZ >> 4;
+			maxZ = ship.maxZ >> 4;
+			for (int x = minX; x <= maxX; x++) {
+				for (int z = minZ; z <= maxZ; z++) {
+					worldSource.getChunk(x, z).generateSkylightMap();
+					ForgeChunkManager.unforceChunk(ticketSourcePosition, new ChunkPos(x, z));
+				}
 			}
 			ForgeChunkManager.releaseTicket(ticketSourcePosition);
 			ticketSourcePosition = null;
 		}
-
-		if (ticketTargetPosition != null) {
-			if (chunksTargetToForce == null) {
-				final BlockPos targetMin = transformation.apply(ship.minX, ship.minY, ship.minZ);
-				final BlockPos targetMax = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
-				final int minX = Math.min(targetMin.getX(), targetMax.getX()) >> 4;
-				final int maxX = Math.max(targetMin.getX(), targetMax.getX()) >> 4;
-				final int minZ = Math.min(targetMin.getZ(), targetMax.getZ()) >> 4;
-				final int maxZ = Math.max(targetMin.getZ(), targetMax.getZ()) >> 4;
-				final BlockPos targetCore = transformation.apply(ship.core);
-				chunksTargetToForce = getSortedChunks(minX, maxX, minZ, maxZ, targetCore.getX() >> 4, targetCore.getZ() >> 4);
-			}
-			for (int chunkIndex = 0; chunkIndex < chunkTargetForceIndex && chunkIndex < chunksTargetToForce.size(); chunkIndex++) {
-				final ChunkPos chunkPos = chunksTargetToForce.get(chunkIndex);
-				generateSkylightMapIfLoaded(worldTarget, chunkPos);
-				ForgeChunkManager.unforceChunk(ticketTargetPosition, chunkPos);
-			}
-			ForgeChunkManager.releaseTicket(ticketTargetPosition);
-			ticketTargetPosition = null;
+		
+		if (ticketTargetAnchor != null) {
+			ForgeChunkManager.unforceChunk(ticketTargetAnchor, new ChunkPos(0, 0));
+			ForgeChunkManager.releaseTicket(ticketTargetAnchor);
+			ticketTargetAnchor = null;
 		}
-	}
-
-	private void resetTargetChunkLoading() {
+		
 		if (ticketTargetPosition != null) {
-			if (chunksTargetToForce != null) {
-				for (int chunkIndex = 0; chunkIndex < chunkTargetForceIndex && chunkIndex < chunksTargetToForce.size(); chunkIndex++) {
-					ForgeChunkManager.unforceChunk(ticketTargetPosition, chunksTargetToForce.get(chunkIndex));
+			final BlockPos targetMin = transformation.apply(ship.minX, ship.minY, ship.minZ);
+			final BlockPos targetMax = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
+			minX = Math.min(targetMin.getX(), targetMax.getX()) >> 4;
+			maxX = Math.max(targetMin.getX(), targetMax.getX()) >> 4;
+			minZ = Math.min(targetMin.getZ(), targetMax.getZ()) >> 4;
+			maxZ = Math.max(targetMin.getZ(), targetMax.getZ()) >> 4;
+			for (int x = minX; x <= maxX; x++) {
+				for (int z = minZ; z <= maxZ; z++) {
+					worldTarget.getChunk(x, z).generateSkylightMap();
+					ForgeChunkManager.unforceChunk(ticketTargetPosition, new ChunkPos(x, z));
 				}
 			}
 			ForgeChunkManager.releaseTicket(ticketTargetPosition);
 			ticketTargetPosition = null;
 		}
-		chunksTargetToForce = null;
-		chunkTargetForceIndex = 0;
 	}
-
-	private boolean releaseChunksBatched() {
-		if (WarpDriveConfig.LOGGING_JUMP) {
-			WarpDrive.logger.info(this + " Releasing chunks");
-		}
-
-		if (ticketSourcePosition != null) {
-			if (chunksSourceToForce == null) {
-				chunksSourceToForce = getSortedChunks(ship.minX >> 4, ship.maxX >> 4, ship.minZ >> 4, ship.maxZ >> 4,
-				                                      ship.core.getX() >> 4, ship.core.getZ() >> 4);
-			}
-			chunkSourceReleaseIndex = releaseChunkBatch(worldSource, ticketSourcePosition, chunksSourceToForce,
-			                                            chunkSourceReleaseIndex, chunkSourceForceIndex);
-			if (chunkSourceReleaseIndex < chunkSourceForceIndex) {
-				return false;
-			}
-			ForgeChunkManager.releaseTicket(ticketSourcePosition);
-			ticketSourcePosition = null;
-		}
-
-		return true;
-	}
-
-	protected boolean state_chunkLoadingSource() {
+	
+	protected void state_chunkLoadingSource() {
 		LocalProfiler.start("Jump.chunkLoadingSource");
 		
 		final WarpDriveText reason = new WarpDriveText();
 		
-		final ChunkLoadingResult chunkLoadingResult = forceSourceChunks(reason);
-		if (chunkLoadingResult == ChunkLoadingResult.FAILED) {
+		if (!forceSourceChunks(reason)) {
 			disableAndMessage(false, reason);
 			LocalProfiler.stop();
-			return false;
+			return;
 		}
 		
 		LocalProfiler.stop();
-		return chunkLoadingResult == ChunkLoadingResult.DONE;
 	}
 	
 	protected void state_saveToMemory() {
@@ -823,8 +747,8 @@ public class JumpSequencer extends AbstractSequencer {
 			final int rangeX = Math.abs(moveX) - (ship.maxX - ship.minX);
 			final int rangeZ = Math.abs(moveZ) - (ship.maxZ - ship.minZ);
 			if (Math.max(rangeX, rangeZ) < 256) {
-				isPluginCheckDone = false;
-			} else {
+				// delayed until the path is loaded, see state_preloadTargetChunks()
+				isJumpDistanceCheckPending = true;
 				isPluginCheckDone = true;
 			}
 			break;
@@ -838,22 +762,80 @@ public class JumpSequencer extends AbstractSequencer {
 			break;
 		}
 		transformation = new Transformation(ship, worldTarget, moveX, moveY, moveZ, rotationSteps);
-		// Long jumps skip swept-path checks, but their final placement still needs collision,
-		// anchor, event and protection validation before any blocks are deployed.
-		isFinalTargetCheckDone = betweenWorlds
-		                      || shipMovementType == EnumShipMovementType.INSTANTIATE
-		                      || shipMovementType == EnumShipMovementType.RESTORE;
-		
+
 		LocalProfiler.stop();
 	}
 	
-	@SuppressWarnings("PMD.NPathComplexity")
-	protected boolean state_adjustJumpVector() {
+	@Nonnull
+	private ArrayList<ChunkPos> getChunksToPreload() {
+		// Cover the target position, plus the source position when a vector adjustment is pending:
+		// the movement is linear, so intermediate positions are within the union of both boxes.
+		// A diagonal move loads corner chunks the ship won't touch, and a rotating ship may reach
+		// a few chunks outside the envelope which will lazy load as before: both are perf only.
+		final BlockPos targetMin = transformation.apply(ship.minX, ship.minY, ship.minZ);
+		final BlockPos targetMax = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
+		int minX = Math.min(targetMin.getX(), targetMax.getX());
+		int maxX = Math.max(targetMin.getX(), targetMax.getX());
+		int minZ = Math.min(targetMin.getZ(), targetMax.getZ());
+		int maxZ = Math.max(targetMin.getZ(), targetMax.getZ());
+		if (isJumpDistanceCheckPending && worldTarget == worldSource) {
+			minX = Math.min(minX, ship.minX);
+			maxX = Math.max(maxX, ship.maxX);
+			minZ = Math.min(minZ, ship.minZ);
+			maxZ = Math.max(maxZ, ship.maxZ);
+		}
+		final int chunkMinX = minX >> 4;
+		final int chunkMaxX = maxX >> 4;
+		final int chunkMinZ = minZ >> 4;
+		final int chunkMaxZ = maxZ >> 4;
+		final ArrayList<ChunkPos> chunkPositions = new ArrayList<>((chunkMaxX - chunkMinX + 1) * (chunkMaxZ - chunkMinZ + 1));
+		for (int xChunk = chunkMinX; xChunk <= chunkMaxX; xChunk++) {
+			for (int zChunk = chunkMinZ; zChunk <= chunkMaxZ; zChunk++) {
+				chunkPositions.add(new ChunkPos(xChunk, zChunk));
+			}
+		}
+		return chunkPositions;
+	}
+	
+	protected boolean state_preloadTargetChunks() {
+		LocalProfiler.start("Jump.preloadTargetChunks");
+		
+		if (chunksToPreload == null) {
+			chunksToPreload = getChunksToPreload();
+			if (WarpDriveConfig.LOGGING_JUMP) {
+				WarpDrive.logger.info(String.format("%s Preloading %d chunks at target, %d per tick",
+				                                    this, chunksToPreload.size(), WarpDriveConfig.G_CHUNKS_PER_TICK));
+			}
+		}
+		
+		// getChunk will load or generate the chunk: this is the expensive part, hence the tick budget
+		final int indexLastChunk = Math.min(chunksToPreload.size(), indexPreloadChunk + WarpDriveConfig.G_CHUNKS_PER_TICK);
+		for (; indexPreloadChunk < indexLastChunk; indexPreloadChunk++) {
+			final ChunkPos chunkPos = chunksToPreload.get(indexPreloadChunk);
+			worldTarget.getChunk(chunkPos.x, chunkPos.z);
+		}
+		if (indexPreloadChunk < chunksToPreload.size()) {
+			LocalProfiler.stop();
+			return false;
+		}
+		
+		// run the delayed vector adjustment now that the whole path is loaded
+		if (isJumpDistanceCheckPending) {
+			isJumpDistanceCheckPending = false;
+			firstAdjustmentReason = getPossibleJumpDistance();
+			transformation = new Transformation(ship, worldTarget, moveX, moveY, moveZ, rotationSteps);
+		}
+		
+		LocalProfiler.stop();
+		return true;
+	}
+	
+	protected void state_adjustJumpVector() {
 		LocalProfiler.start("Jump.adjustJumpVector");
 		if (WarpDriveConfig.LOGGING_JUMP) {
 			WarpDrive.logger.info(this + " Adjusting jump vector...");
 		}
-
+		
 		{
 			final BlockPos blockPosMinAtTarget = transformation.apply(ship.minX, ship.minY, ship.minZ);
 			final BlockPos blockPosMaxAtTarget = transformation.apply(ship.maxX, ship.maxY, ship.maxZ);
@@ -884,7 +866,7 @@ public class JumpSequencer extends AbstractSequencer {
 				}
 				disableAndMessage(false, textComponent);
 				LocalProfiler.stop();
-				return false;
+				return;
 			}
 			
 			// Check world border
@@ -904,20 +886,9 @@ public class JumpSequencer extends AbstractSequencer {
 					                                                (int) axisAlignedBB.maxX, (int) axisAlignedBB.maxY, (int) axisAlignedBB.maxZ );
 					LocalProfiler.stop();
 					disableAndMessage(false, message);
-					return false;
+					return;
 				}
 			}
-		}
-		final WarpDriveText reason = new WarpDriveText();
-		final ChunkLoadingResult chunkLoadingResult = forceTargetChunks(reason);
-		if (chunkLoadingResult == ChunkLoadingResult.FAILED) {
-			disableAndMessage(false, reason);
-			LocalProfiler.stop();
-			return false;
-		}
-		if (chunkLoadingResult == ChunkLoadingResult.IN_PROGRESS) {
-			LocalProfiler.stop();
-			return false;
 		}
 		if (ship.shipCore != null && navigationEngagedWaypoint) {
 			final BlockPos blockPosCoreAtTarget = transformation.apply(ship.core);
@@ -929,35 +900,23 @@ public class JumpSequencer extends AbstractSequencer {
 				disableAndMessage(false, new WarpDriveText(Commons.getStyleWarning(),
 				                                                   "warpdrive.navigation.waypoint.no_landing_space"));
 				LocalProfiler.stop();
-				return false;
+				return;
 			}
 		}
-
-		if (!isPluginCheckDone && !betweenWorlds) {
-			firstAdjustmentReason = getPossibleJumpDistance();
-			isPluginCheckDone = true;
-			transformation = new Transformation(ship, worldTarget, moveX, moveY, moveZ, rotationSteps);
-			isFinalTargetCheckDone = false;
-			resetTargetChunkLoading();
-			LocalProfiler.stop();
-			return false;
-		}
-		if (!isFinalTargetCheckDone) {
+		if (!isPluginCheckDone) {
 			final CheckMovementResult checkMovementResult = checkCollisionAndProtection(transformation, true,
 			                                                                            "target", new VectorI(0, 0, 0));
 			if (checkMovementResult != null) {
 				disableAndMessage(false, checkMovementResult.reason);
 				LocalProfiler.stop();
-				return false;
+				return;
 			}
-			isFinalTargetCheckDone = true;
 		}
 		
 		LocalProfiler.stop();
-		return true;
 	}
 	
-	protected boolean state_loadTargetChunks() {
+	protected void state_loadTargetChunks() {
 		LocalProfiler.start("Jump.loadTargetChunks");
 		if (WarpDriveConfig.LOGGING_JUMP) {
 			WarpDrive.logger.info(this + " Loading chunks at target...");
@@ -965,15 +924,13 @@ public class JumpSequencer extends AbstractSequencer {
 		
 		final WarpDriveText reason = new WarpDriveText();
 		
-		final ChunkLoadingResult chunkLoadingResult = forceTargetChunks(reason);
-		if (chunkLoadingResult == ChunkLoadingResult.FAILED) {
+		if (!forceTargetChunks(reason)) {
 			disableAndMessage(false, reason);
 			LocalProfiler.stop();
-			return false;
+			return;
 		}
 		
 		LocalProfiler.stop();
-		return chunkLoadingResult == ChunkLoadingResult.DONE;
 	}
 	
 	protected void state_saveEntitiesAndInformPlayers() {
@@ -1327,7 +1284,12 @@ public class JumpSequencer extends AbstractSequencer {
 			reason.append(Commons.getStyleWarning(), "warpdrive.error.internal_check_console");
 			return false;
 		}
-		
+
+		// add a chunk loader to target world so it's not unloaded prematurely
+		if (worldTarget != worldSource) {
+			return forceTargetAnchor(reason);
+		}
+
 		return true;
 	}
 	
@@ -1645,13 +1607,12 @@ public class JumpSequencer extends AbstractSequencer {
 		LocalProfiler.stop();
 	}
 	
-	protected boolean state_chunkReleasing() {
+	protected void state_chunkReleasing() {
 		LocalProfiler.start("Jump.chunkReleasing");
-		
-		final boolean isDone = releaseChunksBatched();
-		
+
+		releaseChunks();
+
 		LocalProfiler.stop();
-		return isDone;
 	}
 	
 	/**
@@ -1998,18 +1959,6 @@ public class JumpSequencer extends AbstractSequencer {
 		} else {
 			return null;
 		}
-	}
-
-	private boolean areTargetChunksLoaded() {
-		if (chunksTargetToForce == null) {
-			return false;
-		}
-		for (final ChunkPos chunkPos : chunksTargetToForce) {
-			if (!worldTarget.isBlockLoaded(new BlockPos((chunkPos.x << 4) + 8, 128, (chunkPos.z << 4) + 8), false)) {
-				return false;
-			}
-		}
-		return true;
 	}
 	
 	private CheckMovementResult checkMovement(final double ratio, final boolean fullCollisionDetails) {
