@@ -53,6 +53,7 @@ public class GuiShipNavigation extends GuiScreen {
 	private static final int BUTTON_MAP_FIT = 30;
 	private static final int BUTTON_MAP_LOCAL = 38;
 	private static final int BUTTON_MAP_HYPERSPACE = 39;
+	private static final int BUTTON_MAP_SURFACE = 45;
 	private static final int BUTTON_ENGAGE = 31;
 	private static final int BUTTON_STEP = 32;
 	private static final int BUTTON_MODE = 33;
@@ -82,6 +83,11 @@ public class GuiShipNavigation extends GuiScreen {
 
 	private static int cachedMapVersion = Integer.MIN_VALUE;
 	private static final ArrayList<MapObject> cachedMapObjects = new ArrayList<>();
+
+	private enum MapMode {
+		CELESTIAL,
+		SURFACE
+	}
 
 	private enum Tab {
 		MAP("warpdrive.navigation.gui.tab.map"),
@@ -174,6 +180,14 @@ public class GuiShipNavigation extends GuiScreen {
 	private boolean isMapViewInitialized;
 	private boolean isMapHyperspaceView;
 	private String mapSpaceId = "";
+	private MapMode mapMode = MapMode.CELESTIAL;
+	private boolean isMapModeForcedByUser;
+	// surface chart view state, independent of the celestial view so toggling preserves both
+	private double surfaceCenterX;
+	private double surfaceCenterZ;
+	private double surfaceZoom = 1.0D;
+	private boolean isSurfaceViewInitialized;
+	private int lastPlanClickTick = -200;
 	private boolean isDraggingMap;
 	private int dragStartX;
 	private int dragStartY;
@@ -304,6 +318,7 @@ public class GuiShipNavigation extends GuiScreen {
 
 		updateStaticMapFromCache();
 		updateMapViewDefaults();
+		updateMapModeDefaults();
 
 		routeLegs.clear();
 		final NBTTagCompound route = this.snapshot.getCompoundTag("route");
@@ -378,6 +393,42 @@ public class GuiShipNavigation extends GuiScreen {
 			isMapHyperspaceView = false;
 			isMapViewInitialized = false;
 		}
+	}
+
+	private void updateMapModeDefaults() {
+		if (!isShipInAtmosphere()) {
+			// the surface chart is meaningless off-planet: the client has no remote terrain
+			mapMode = MapMode.CELESTIAL;
+			isMapModeForcedByUser = false;
+			isSurfaceViewInitialized = false;
+			return;
+		}
+		if (!isMapModeForcedByUser && mapMode != MapMode.SURFACE) {
+			setSurfaceMode();
+		}
+	}
+
+	private boolean isShipInAtmosphere() {
+		return snapshot != null
+		    && !snapshot.getBoolean("inSpace")
+		    && !snapshot.getBoolean("inHyperspace");
+	}
+
+	private void setSurfaceMode() {
+		mapMode = MapMode.SURFACE;
+		if (!isSurfaceViewInitialized) {
+			surfaceCenterX = blockPosCore.getX();
+			surfaceCenterZ = blockPosCore.getZ();
+			surfaceZoom = 1.0D;
+			isSurfaceViewInitialized = true;
+		}
+		reloadWaypointsQuietly();
+	}
+
+	private void reloadWaypointsQuietly() {
+		waypoints.clear();
+		waypoints.addAll(WaypointCache.get(dimensionId));
+		rebuildWaypointRows();
 	}
 
 	private void rebuildDestinationRows() {
@@ -643,10 +694,14 @@ public class GuiShipNavigation extends GuiScreen {
 		final int y = mapY + 24;
 		final int hyperspaceWidth = 70;
 		final int localWidth = 44;
+		final int surfaceWidth = 54;
 		final int hyperspaceX = mapX + mapWidth - hyperspaceWidth - 6;
 		final int localX = hyperspaceX - localWidth - 4;
 		buttonList.add(styled(new GuiButton(BUTTON_MAP_LOCAL, localX, y, localWidth, 16, I18n.format("warpdrive.navigation.gui.map.local"))));
 		buttonList.add(styled(new GuiButton(BUTTON_MAP_HYPERSPACE, hyperspaceX, y, hyperspaceWidth, 16, I18n.format("warpdrive.navigation.gui.map.hyperspace"))));
+		if (isShipInAtmosphere()) {
+			buttonList.add(styled(new GuiButton(BUTTON_MAP_SURFACE, localX - surfaceWidth - 4, y, surfaceWidth, 16, I18n.format("warpdrive.navigation.gui.map.surface"))));
+		}
 	}
 
 	private void addShipButtonsAndFields() {
@@ -769,9 +824,11 @@ public class GuiShipNavigation extends GuiScreen {
 			} else if (button.id == BUTTON_CANCEL) {
 				button.enabled = allowed && !targetId.isEmpty();
 			} else if (button.id == BUTTON_MAP_LOCAL) {
-				button.enabled = isMapHyperspaceView;
+				button.enabled = isMapHyperspaceView || mapMode == MapMode.SURFACE;
 			} else if (button.id == BUTTON_MAP_HYPERSPACE) {
-				button.enabled = !isMapHyperspaceView;
+				button.enabled = !isMapHyperspaceView || mapMode == MapMode.SURFACE;
+			} else if (button.id == BUTTON_MAP_SURFACE) {
+				button.enabled = mapMode != MapMode.SURFACE;
 			} else if (button.id != BUTTON_REFRESH && button.id != BUTTON_MAP_FIT && button.id != BUTTON_MODE) {
 				button.enabled = allowed;
 			} else if (button.id == BUTTON_MODE) {
@@ -807,13 +864,27 @@ public class GuiShipNavigation extends GuiScreen {
 		}
 		switch (button.id) {
 		case BUTTON_MAP_FIT:
-			resetMapView();
+			if (mapMode == MapMode.SURFACE) {
+				surfaceCenterX = blockPosCore.getX();
+				surfaceCenterZ = blockPosCore.getZ();
+				surfaceZoom = 1.0D;
+			} else {
+				resetMapView();
+			}
 			break;
 		case BUTTON_MAP_LOCAL:
+			isMapModeForcedByUser = true;
+			mapMode = MapMode.CELESTIAL;
 			setMapHyperspaceView(false);
 			break;
 		case BUTTON_MAP_HYPERSPACE:
+			isMapModeForcedByUser = true;
+			mapMode = MapMode.CELESTIAL;
 			setMapHyperspaceView(true);
+			break;
+		case BUTTON_MAP_SURFACE:
+			isMapModeForcedByUser = true;
+			setSurfaceMode();
 			break;
 		case BUTTON_ENGAGE:
 			sendAction(MessageShipNavigationAction.ACTION_ENGAGE, "");
@@ -1147,9 +1218,14 @@ public class GuiShipNavigation extends GuiScreen {
 	@Override
 	protected void mouseClickMove(final int mouseX, final int mouseY, final int clickedMouseButton, final long timeSinceLastClick) {
 		if (isDraggingMap) {
-			final double scale = mapScale();
-			viewCenterX -= (mouseX - dragLastX) / scale;
-			viewCenterZ -= (mouseY - dragLastY) / scale;
+			if (mapMode == MapMode.SURFACE) {
+				surfaceCenterX -= (mouseX - dragLastX) / surfaceZoom;
+				surfaceCenterZ -= (mouseY - dragLastY) / surfaceZoom;
+			} else {
+				final double scale = mapScale();
+				viewCenterX -= (mouseX - dragLastX) / scale;
+				viewCenterZ -= (mouseY - dragLastY) / scale;
+			}
 			dragLastX = mouseX;
 			dragLastY = mouseY;
 			return;
@@ -1164,7 +1240,11 @@ public class GuiShipNavigation extends GuiScreen {
 			final int dy = mouseY - dragStartY;
 			isDraggingMap = false;
 			if (state == 0 && dx * dx + dy * dy <= 16 && isInsideMap(mouseX, mouseY)) {
-				selectMapObject(mouseX, mouseY);
+				if (mapMode == MapMode.SURFACE) {
+					selectSurfacePoint(mouseX, mouseY);
+				} else {
+					selectMapObject(mouseX, mouseY);
+				}
 			}
 			return;
 		}
@@ -1191,9 +1271,17 @@ public class GuiShipNavigation extends GuiScreen {
 		if (!isInsideMap(mouseX, mouseY)) {
 			return;
 		}
+		final double zoomFactor = wheel > 0 ? 1.18D : 1.0D / 1.18D;
+		if (mapMode == MapMode.SURFACE) {
+			final double blockX = fromSurfaceScreenX(mouseX);
+			final double blockZ = fromSurfaceScreenY(mouseY);
+			surfaceZoom = clamp(surfaceZoom * zoomFactor, 0.25D, 8.0D);
+			surfaceCenterX = blockX - (mouseX - (mapX + mapWidth * 0.5D)) / surfaceZoom;
+			surfaceCenterZ = blockZ - (mouseY - (mapY + mapHeight * 0.5D)) / surfaceZoom;
+			return;
+		}
 		final double worldX = fromScreenX(mouseX);
 		final double worldZ = fromScreenY(mouseY);
-		final double zoomFactor = wheel > 0 ? 1.18D : 1.0D / 1.18D;
 		mapZoom = clamp(mapZoom * zoomFactor, 0.25D, 32.0D);
 		final double scale = mapScale();
 		viewCenterX = worldX - (mouseX - (mapX + mapWidth * 0.5D)) / scale;
@@ -1228,6 +1316,38 @@ public class GuiShipNavigation extends GuiScreen {
 			selectedId = bestObject.id;
 			sendAction(MessageShipNavigationAction.ACTION_PLAN, selectedId);
 		}
+	}
+
+	private void selectSurfacePoint(final int mouseX, final int mouseY) {
+		if (!allowed) {
+			return;
+		}
+		// the server throttles PLAN_WAYPOINT to one per 5s per core: debounce and give feedback instead of eating clicks
+		if (clientTick - lastPlanClickTick < 100) {
+			return;
+		}
+		lastPlanClickTick = clientTick;
+		MapWaypoint bestWaypoint = null;
+		double bestDistance = Double.MAX_VALUE;
+		for (final MapWaypoint waypoint : waypoints) {
+			final double dx = mouseX - toSurfaceScreenX(waypoint.x);
+			final double dy = mouseY - toSurfaceScreenY(waypoint.z);
+			final double distance = dx * dx + dy * dy;
+			if (distance <= 49.0D && distance < bestDistance) {
+				bestDistance = distance;
+				bestWaypoint = waypoint;
+			}
+		}
+		targetId = "";
+		selectedId = "";
+		canEngage = false;
+		if (bestWaypoint != null) {
+			planWaypoint(bestWaypoint);
+			return;
+		}
+		final int blockX = (int) Math.round(fromSurfaceScreenX(mouseX));
+		final int blockZ = (int) Math.round(fromSurfaceScreenY(mouseY));
+		planWaypoint(new MapWaypoint("map", I18n.format("warpdrive.navigation.gui.map_click"), blockX, 0, blockZ));
 	}
 
 	private void selectDestination(final int mouseY) {
@@ -1305,6 +1425,10 @@ public class GuiShipNavigation extends GuiScreen {
 		  && clientTick - lastDimensionSendTick >= 10 ) {
 			lastDimensionSendTick = clientTick;
 			sendSettingsPayload(pendingDimensionPayload.copy());
+		}
+		// keep surface pins fresh; the cache TTL makes this a cheap no-op most ticks
+		if (mapMode == MapMode.SURFACE && clientTick % 100 == 0) {
+			reloadWaypointsQuietly();
 		}
 		// live polling: faster while a jump or autopilot leg is happening
 		if (allowed) {
@@ -1417,6 +1541,10 @@ public class GuiShipNavigation extends GuiScreen {
 		drawRect(mapX, mapY, mapX + mapWidth, mapY + mapHeight, 0xDD040810);
 		drawRect(mapX, mapY, mapX + mapWidth, mapY + 1, COLOR_CYAN_DIM);
 		drawRect(mapX, mapY + mapHeight - 1, mapX + mapWidth, mapY + mapHeight, COLOR_CYAN_DIM);
+		if (mapMode == MapMode.SURFACE) {
+			drawSurfaceMap(mouseX, mouseY);
+			return;
+		}
 		final boolean isHyperspaceView = isHyperspaceMapView();
 		final MapObject current = findObject(currentId);
 		final MapObject currentSpaceRegion = findContainingSpaceRegion(current);
@@ -1488,6 +1616,105 @@ public class GuiShipNavigation extends GuiScreen {
 		drawMapLabel(occupiedLabels, I18n.format("warpdrive.navigation.gui.ship"), x, y, 10, 0xFF9DEBFF);
 		drawMapLabel(occupiedLabels, trimToWidth("X " + Commons.format(shipMapX) + "  Z " + Commons.format(shipMapZ), 120),
 		             x, y + 11, 10, COLOR_TEXT_DIM);
+	}
+
+	// ----- surface chart -----
+
+	private void drawSurfaceMap(final int mouseX, final int mouseY) {
+		final long time = System.currentTimeMillis() - openedAtMs;
+		fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.surface_chart"), mapX + 10, mapY + 8, 0xFFE8F3FF);
+		fontRenderer.drawString(I18n.format("warpdrive.navigation.gui.zoom", String.format("%.1f", surfaceZoom)), mapX + 92, mapY + 8, COLOR_TEXT_DIM);
+		fontRenderer.drawString(trimToWidth(I18n.format("warpdrive.navigation.gui.surface_hint"), mapWidth - 20),
+		                        mapX + 10, mapY + mapHeight - 12, COLOR_TEXT_DIM);
+
+		drawSurfaceTerrain();
+		drawSurfaceGrid();
+
+		final int shipScreenX = toSurfaceScreenX(blockPosCore.getX());
+		final int shipScreenY = toSurfaceScreenY(blockPosCore.getZ());
+		if (targetIsWaypoint && !targetId.isEmpty()) {
+			final int targetScreenX = toSurfaceScreenX(targetWaypointX);
+			final int targetScreenY = toSurfaceScreenY(targetWaypointZ);
+			drawLine(shipScreenX, shipScreenY, targetScreenX, targetScreenY, 0xAA2DD4FF);
+			drawDiamond(targetScreenX, targetScreenY, 6.0F + (float) (1.5D * Math.sin(time / 220.0D)), 0x88F5C542);
+		}
+
+		final ArrayList<LabelBounds> occupiedLabels = new ArrayList<>();
+		MapWaypoint hoveredWaypoint = null;
+		for (final MapWaypoint waypoint : waypoints) {
+			final int x = toSurfaceScreenX(waypoint.x);
+			final int y = toSurfaceScreenY(waypoint.z);
+			if (x < mapX + 4 || x > mapX + mapWidth - 4 || y < mapY + 22 || y > mapY + mapHeight - 6) {
+				continue;
+			}
+			drawDiamond(x, y, 4.0F, sourceColor(waypoint.source));
+			if (surfaceZoom >= 0.5D) {
+				drawMapLabel(occupiedLabels, trimToWidth(waypoint.name, 90), x, y, 6, 0xFFC8D6E0);
+			}
+			final double dx = mouseX - x;
+			final double dy = mouseY - y;
+			if (dx * dx + dy * dy <= 49.0D) {
+				hoveredWaypoint = waypoint;
+			}
+		}
+
+		drawCircle(shipScreenX, shipScreenY, 8.0F + (float) (2.0D * Math.sin(time / 250.0D)), 0x6630E8FF, 40);
+		drawShipHeading(shipScreenX, shipScreenY);
+		drawMapLabel(occupiedLabels, I18n.format("warpdrive.navigation.gui.ship"), shipScreenX, shipScreenY, 10, 0xFF9DEBFF);
+		drawMapLabel(occupiedLabels, trimToWidth("X " + Commons.format(blockPosCore.getX()) + "  Z " + Commons.format(blockPosCore.getZ()), 120),
+		             shipScreenX, shipScreenY + 11, 10, COLOR_TEXT_DIM);
+
+		if (clientTick - lastPlanClickTick < 100) {
+			drawCenteredString(fontRenderer, I18n.format("warpdrive.navigation.gui.plan_throttled"),
+			                   mapX + mapWidth / 2, mapY + 22, COLOR_AMBER);
+		}
+		if (hoveredWaypoint != null) {
+			final ArrayList<String> tooltip = new ArrayList<>();
+			tooltip.add(hoveredWaypoint.name);
+			tooltip.add(hoveredWaypoint.source);
+			tooltip.add("X " + Commons.format(hoveredWaypoint.x) + "  Y " + Commons.format(hoveredWaypoint.y)
+			          + "  Z " + Commons.format(hoveredWaypoint.z));
+			tooltip.add(bearingText(hoveredWaypoint.x, hoveredWaypoint.z));
+			drawHoveringText(tooltip, mouseX, mouseY);
+		}
+	}
+
+	// terrain placeholder until the sampled terrain cache lands
+	private void drawSurfaceTerrain() {
+		drawRect(mapX + 1, mapY + 21, mapX + mapWidth - 1, mapY + mapHeight - 2, 0xFF0A1220);
+	}
+
+	private void drawSurfaceGrid() {
+		final int step = surfaceZoom >= 2.0D ? 16 : 64;
+		final int gridTop = mapY + 21;
+		final int gridBottom = mapY + mapHeight - 2;
+		final int firstX = (int) Math.floor(fromSurfaceScreenX(mapX + 1) / step) * step;
+		final int lastX = (int) Math.ceil(fromSurfaceScreenX(mapX + mapWidth - 1));
+		for (int blockX = firstX; blockX <= lastX; blockX += step) {
+			final int x = toSurfaceScreenX(blockX);
+			if (x > mapX + 1 && x < mapX + mapWidth - 1) {
+				drawRect(x, gridTop, x + 1, gridBottom, 0x22214055);
+			}
+		}
+		final int firstZ = (int) Math.floor(fromSurfaceScreenY(gridTop) / step) * step;
+		final int lastZ = (int) Math.ceil(fromSurfaceScreenY(gridBottom));
+		for (int blockZ = firstZ; blockZ <= lastZ; blockZ += step) {
+			final int y = toSurfaceScreenY(blockZ);
+			if (y > gridTop && y < gridBottom) {
+				drawRect(mapX + 1, y, mapX + mapWidth - 1, y + 1, 0x22214055);
+			}
+		}
+	}
+
+	private void drawShipHeading(final int x, final int y) {
+		final NBTTagCompound orientation = snapshot.getCompoundTag("orientation");
+		final int facingX = orientation.getInteger("x");
+		final int facingZ = orientation.getInteger("z");
+		if (facingX == 0 && facingZ == 0) {
+			return;
+		}
+		drawLine(x, y, x + facingX * 12, y + facingZ * 12, 0xFF9DEBFF);
+		drawCircle(x + facingX * 12, y + facingZ * 12, 1.5F, 0xFF9DEBFF, 12);
 	}
 
 	private void drawSpaceRegionBackdrop(final MapObject spaceRegion) {
@@ -2087,6 +2314,23 @@ public class GuiShipNavigation extends GuiScreen {
 		return viewCenterZ + (y - (mapY + mapHeight * 0.5D)) / mapScale();
 	}
 
+	// surface chart transforms: surfaceZoom is pixels per block
+	private int toSurfaceScreenX(final double blockX) {
+		return (int) Math.round(mapX + mapWidth * 0.5D + (blockX - surfaceCenterX) * surfaceZoom);
+	}
+
+	private int toSurfaceScreenY(final double blockZ) {
+		return (int) Math.round(mapY + mapHeight * 0.5D + (blockZ - surfaceCenterZ) * surfaceZoom);
+	}
+
+	private double fromSurfaceScreenX(final int x) {
+		return surfaceCenterX + (x - (mapX + mapWidth * 0.5D)) / surfaceZoom;
+	}
+
+	private double fromSurfaceScreenY(final int y) {
+		return surfaceCenterZ + (y - (mapY + mapHeight * 0.5D)) / surfaceZoom;
+	}
+
 	private boolean isInsideMap(final int x, final int y) {
 		return x >= mapX && x <= mapX + mapWidth && y >= mapY && y <= mapY + mapHeight;
 	}
@@ -2115,7 +2359,8 @@ public class GuiShipNavigation extends GuiScreen {
 	private static boolean isMapCanvasButton(final int buttonId) {
 		return buttonId == BUTTON_MAP_FIT
 		    || buttonId == BUTTON_MAP_LOCAL
-		    || buttonId == BUTTON_MAP_HYPERSPACE;
+		    || buttonId == BUTTON_MAP_HYPERSPACE
+		    || buttonId == BUTTON_MAP_SURFACE;
 	}
 
 	private static double clamp(final double value, final double min, final double max) {
