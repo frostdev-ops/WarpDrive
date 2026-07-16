@@ -269,7 +269,7 @@ public class PacketHandler {
 		final MessageClientSync messageClientSync = new MessageClientSync(entityPlayerMP, celestialObject);
 		simpleNetworkManager.sendTo(messageClientSync, entityPlayerMP);
 	}
-	
+
 	public static void sendShipNavigationPacket(final EntityPlayerMP entityPlayerMP, final NBTTagCompound tagCompound) {
 		final MessageShipNavigation messageShipNavigation = new MessageShipNavigation(tagCompound);
 		simpleNetworkManager.sendTo(messageShipNavigation, entityPlayerMP);
@@ -318,7 +318,7 @@ public class PacketHandler {
 		final MessageShipNavigationAction messageShipNavigationAction = new MessageShipNavigationAction(action, dimensionId, blockPosCore, blockPosAccess, payload);
 		simpleNetworkManager.sendToServer(messageShipNavigationAction);
 	}
-	
+
 	// resend the celestial map to all connected players, i.e. after a runtime celestial object registration
 	public static void sendClientSyncToAll() {
 		final MinecraftServer server = FMLCommonHandler.instance().getMinecraftServerInstance();
