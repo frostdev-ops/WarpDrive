@@ -43,6 +43,16 @@ public abstract class AbstractWorldProvider extends WorldProvider {
 	public String getSaveFolder() {
 		updateCelestialObject();
 		if (celestialObjectDimension == null) {
+			if (isRemote) {
+				// on the client, the celestial object sync packet arrives after SPacketJoinGame, but mods like
+				// The Betweenlands query the save folder while constructing the WorldClient itself: fall back to
+				// the locally configured XML data, then to a stable synthetic name, instead of killing the login
+				final CelestialObject celestialObjectLocal = CelestialObjectManager.get(false, getDimension(), 0, 0);
+				if (celestialObjectLocal != null) {
+					return celestialObjectLocal.id;
+				}
+				return "warpdrive_dim" + getDimension();
+			}
 			throw new RuntimeException(String.format("Critical error: there's no celestial object defining %s dimension DIM%d, unable to proceed further",
 			                                         isRemote ? "client" : "server", getDimension()));
 		}
